@@ -84,11 +84,44 @@ export async function start({url,confirmedRights},req){
        noWarnings:true,noProgress:true,hlsUseMpegts:true
      },{timeout:MAX_DURATION+30000,killSignal:'SIGTERM'});
      job.extractor=extractor;
+     const extractionFailure=err=>{
+       // youtube-dl-exec is a promise-like subprocess. Rejections MUST be
+       // handled or Node can exit, invalidating every in-memory job token.
+       const message=String(err?.stderr||err?.message||err||'').slice(-1500);
+       const botCheck=/sign in to confirm|not a bot|confirm you.re not a bot/i.test(message);
+       job.error=botCheck
+        ?'YouTube required sign-in/bot verification from this server. Server-side recording is unavailable for this stream; no authentication bypass is attempted.'
+        :'Stream extraction failed: '+message.replace(/https?:\/\/[^\s]+/g,'[source]').slice(-300);
+       if(job.status==='recording'||job.status==='starting')job.status='failed';
+       job.chatStop=true;
+       try{extractor.stdout.unpipe(child.stdin)}catch{}
+       try{child.stdin.end()}catch{}
+       try{child.kill('SIGTERM')}catch{}
+     };
+     if(typeof extractor.catch==='function')extractor.catch(extractionFailure);
+     extractor.stdout.on('error',extractionFailure);
+     child.stdin.on('error',e=>{
+       if(e.code==='EPIPE'||e.code==='ERR_STREAM_DESTROYED')return;
+       extractionFailure(e);
+     });
      extractor.stdout.pipe(child.stdin);
-     extractor.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
-     extractor.on('error',e=>{job.error='Stream extractor failed: '+e.message;job.status='failed';try{child.kill('SIGTERM')}catch{}});
+     extractor.stderr.on('data',b=>{
+       const msg=String(b);
+       if(/sign in to confirm|not a bot|confirm you.re not a bot/i.test(msg)){
+         job.error='YouTube required sign-in/bot verification from this server. Recording is unavailable for this stream.';
+       }else if(job.status==='recording')job.error=msg.replace(/https?:\/\/[^\s]+/g,'[source]').slice(-300);
+     });
+     extractor.on('error',extractionFailure);
      extractor.on('close',c=>{
-       if(job.extractor===extractor){job.extractor=null;if(job.status==='recording'){job.status='failed';job.error=job.error||'Extractor stopped ('+c+'). The stream may be unavailable, blocked or offline.'}}
+       if(job.extractor===extractor){
+         job.extractor=null;
+         if(job.status==='recording'){
+           job.status='failed';
+           job.error=job.error||'Extractor exited ('+c+'). Stream may be offline or blocked.';
+           job.chatStop=true;
+           try{child.kill('SIGTERM')}catch{}
+         }
+       }
      });
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }

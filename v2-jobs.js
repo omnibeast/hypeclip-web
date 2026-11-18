@@ -9,11 +9,12 @@ import youtubedl from 'youtube-dl-exec';
 import {bestHlsUrl} from './server-hls.js';
 
 const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5, MAX_MARKERS=60, HISTORY_LIMIT=180;
-const DEMO_SOURCE='demo://test-pattern';
+const DEMO_SOURCE='demo://test-pattern', BROWSER_SOURCE='browser://capture';
 const guid=()=>crypto.randomUUID(),safeId=s=>/^[a-f0-9-]{36}$/.test(s||'');
 function error(message,status=400){return {error:message,status}}
 const allowedHosts=()=>new Set((process.env.HYPECLIP_ALLOWED_HLS_HOSTS||'').split(',').map(h=>h.trim().toLowerCase()).filter(Boolean));
 function provider(url){
+ if(url===BROWSER_SOURCE)return {provider:'Browser tab capture',status:'ready',reason:'Records a tab or window you choose, with optional tab audio. The browser must stay open.'};
  if(url===DEMO_SOURCE)return {provider:'Built-in video test',status:'ready',reason:'Self-generated test footage. Validates server recording, clean MP4 creation, CSV/JSON logs and downloads without YouTube access.'};
  let u;try{u=new URL(url)}catch{return {provider:'unknown',status:'invalid',reason:'Enter a full HTTPS livestream URL.'}}
  if(u.protocol!=='https:'||u.username||u.password)return {provider:'unknown',status:'invalid',reason:'Use a standard HTTPS URL without credentials.'};
@@ -45,7 +46,7 @@ async function validateURL(raw){
 function cleanup(job){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
 function scan(job){
  if(!fs.existsSync(job.dir))return [];
- const names=fs.readdirSync(job.dir).filter(n=>/^part-\d{6}\.ts$/.test(n)).sort().slice(-MAX_SEGMENTS);
+ const names=fs.readdirSync(job.dir).filter(n=>/^part-\d{6}\.(ts|webm)$/.test(n)).sort().slice(-MAX_SEGMENTS);
  return names.map(n=>{const file=path.join(job.dir,n),s=fs.statSync(file);return {file,at:s.mtimeMs,size:s.size}}).filter(s=>s.size>200);
 }
 function recordHype(job,rate,baseline=0,unique=0,source='chat'){
@@ -57,7 +58,7 @@ function recordHype(job,rate,baseline=0,unique=0,source='chat'){
 function view(job){
  const segs=scan(job);const bufferedBytes=segs.reduce((n,x)=>n+x.size,0);
  const recordingHealth=job.status==='starting'?'starting':job.status==='recording'&&!segs.length?'waiting-for-video':job.status==='recording'?'buffering':job.status;
- return {id:job.id,provider:job.provider,status:job.status,recordingHealth,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,bufferedBytes,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,hypeHistory:job.hypeHistory||[],markers:job.markers||[],clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}
+ return {id:job.id,provider:job.provider,status:job.status,recordingHealth,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,bufferedBytes,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,captureDetails:job.captureDetails||null,hypeHistory:job.hypeHistory||[],markers:job.markers||[],clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}
 }
 function readJob(id,token){
  const job=jobs.get(id);
@@ -93,7 +94,7 @@ function reclaimStaleJobs(){
   if(latest&&now-latest.at>45000){releaseRecorder(job,'Recording stalled: no new video arrived for 45 seconds. Session slot released.')}
  }
 }
-export async function start({url,confirmedRights,captureHlsUrl},req){
+export async function start({url,confirmedRights,captureHlsUrl,chatUrl},req){
  if(!confirmedRights)throw error('Confirm you own or have permission to record this video source.');
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
  reclaimStaleJobs();
@@ -106,17 +107,26 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
  const source=hasBackup?captureHlsUrl.trim():url;
  const parsed=provider(source);if(parsed.status!=='ready')throw error(parsed.reason,422);
  if(hasBackup&&parsed.provider!=='Direct HLS')throw error('The alternate source must be an approved HTTPS .m3u8 playlist.',422);
+ const isBrowser=parsed.provider==='Browser tab capture';
  const isDemo=parsed.provider==='Built-in video test';
  const isDirectHls=parsed.provider==='Direct HLS';
- const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
+ const validated=isBrowser?BROWSER_SOURCE:isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
+ let browserChatUrl=null;
+ if(isBrowser&&chatUrl){const ch=provider(String(chatUrl));if(ch.provider!=='YouTube')throw error('Optional chat link must be a YouTube video or live URL.',422);browserChatUrl=new URL(String(chatUrl)).toString()}
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],markers:[],streamStartedAt:null,chatStop:false};jobs.set(id,job);
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:isBrowser?browserChatUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],markers:[],streamStartedAt:null,chatStop:false};jobs.set(id,job);
  let extractor=null;
+ if(isBrowser){
+   job.status='starting';job.uploadIndex=0;job.captureDetails=null;
+   job.timer=setInterval(()=>{if(Date.now()>job.expiresAt&&['recording','starting','chat-only'].includes(job.status)){job.chatStop=true;job.status='finished';clearInterval(job.timer);job.timer=null}},5000);
+   if(job.chatVideoUrl&&process.env.YOUTUBE_API_KEY)void monitorChat(job,job.chatVideoUrl);
+   return {job:view(job),token};
+ }
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
  const output=path.join(dir,'part-%06d.ts');
  // Built-in synthetic source makes the complete capture -> clip -> download path testable.
- const demoArgs=['-hide_banner','-loglevel','error','-nostdin','-re','-f','lavfi','-i','testsrc2=size=640x360:rate=15','-re','-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-map','0:v:0','-map','1:a:0','-c:v','libx264','-preset','ultrafast','-g','30','-b:v','650k','-pix_fmt','yuv420p','-c:a','aac','-b:a','96k','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',output];
+ const demoArgs=['-hide_banner','-loglevel','error','-nostdin','-re','-f','lavfi','-i','testsrc2=size=640x360:rate=15','-re','-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-map','0:v:0','-map','1:a:0','-c:v','libx264','-preset','veryfast','-g','30','-b:v','650k','-pix_fmt','yuv420p','-c:a','aac','-b:a','96k','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',output];
  const args=isDemo?demoArgs:['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',sourceInput,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',output];
  const child=spawn(ffmpeg,args,{stdio:[isDemo||isDirectHls?'ignore':'pipe','ignore','pipe']});job.child=child;job.status='recording';
  child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
@@ -258,9 +268,9 @@ async function monitorChat(job,url){
 function encode(files,out,quality){
  return new Promise((resolve,reject)=>{
  const list=out+'.txt';fs.writeFileSync(list,files.map(f=>"file '"+f.replace(/'/g,"'\\''")+"'").join('\n'));
- const h=quality==='480'?480:quality==='720'?720:1080,crf=quality==='480'?'24':quality==='720'?'23':'21';
+ const h=quality==='480'?480:quality==='720'?720:quality==='1080'?1080:quality==='1440'?1440:quality==='2160'?2160:4320,crf=quality==='480'?'22':quality==='720'?'20':quality==='1080'?'18':quality==='1440'?'17':'16';
  const vf='scale=-2:trunc(min(ih\\,'+h+')/2)*2';
- const proc=spawn(ffmpeg,['-hide_banner','-loglevel','error','-nostdin','-y','-f','concat','-safe','0','-i',list,'-vf',vf,'-c:v','libx264','-preset','ultrafast','-crf',crf,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-t','65',out],{stdio:['ignore','ignore','pipe']});
+ const proc=spawn(ffmpeg,['-hide_banner','-loglevel','error','-nostdin','-y','-f','concat','-safe','0','-i',list,'-vf',vf,'-c:v','libx264','-preset','ultrafast','-crf',crf,'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart','-t','65',out],{stdio:['ignore','ignore','pipe']});
  let stderr='';proc.stderr.on('data',d=>stderr=(stderr+String(d)).slice(-350));proc.on('error',reject);proc.on('close',code=>{try{fs.unlinkSync(list)}catch{}code===0&&fs.existsSync(out)?resolve():reject(Error('Video encoding failed: '+stderr))});
  });
 }
@@ -269,7 +279,7 @@ export async function createClip(id,token,settings={}){
  if(job.clips.some(c=>c.state==='encoding'))throw error('Another clip is encoding.',429);
  if(job.clips.length>=MAX_CLIPS)throw error('This demo job has reached its clip limit of '+MAX_CLIPS+'.');
  const before=Number(settings.before??20),after=Number(settings.after??10),quality=String(settings.quality||'1080');
- if(!Number.isInteger(before)||!Number.isInteger(after)||before<5||after<5||before+after>65||!['480','720','1080'].includes(quality))throw error('Select 5+ seconds before/after, maximum 65 seconds total, and a supported quality.');
+ if(!Number.isInteger(before)||!Number.isInteger(after)||before<5||after<5||before+after>65||!['480','720','1080','1440','2160','source'].includes(quality))throw error('Select 5+ seconds before/after, maximum 65 seconds total, and a supported quality.');
  const event=Date.now(),clip={id:guid(),state:'encoding',error:'',createdAt:event};job.clips.unshift(clip);
  void (async()=>{try{
  await new Promise(r=>setTimeout(r,after*1000));if(job.status!=='recording')throw Error('Recording ended before the clip was complete.');
@@ -283,6 +293,28 @@ export async function createClip(id,token,settings={}){
  clip.state='ready';clip.bytes=fs.statSync(output).size;
  }catch(e){clip.state='failed';clip.error=e.message}})();
  return {id:clip.id,state:clip.state};
+}
+export async function ingestBrowserSegment(id,token,req){
+ const job=readJob(id,token);
+ if(job.provider!=='Browser tab capture'||!['recording','starting'].includes(job.status))throw error('Browser recording is not active.',422);
+ if(Date.now()>job.expiresAt)throw error('Browser recording session has reached its 10 minute beta limit.',410);
+ const chunks=[];let length=0;
+ for await(const chunk of req){length+=chunk.length;if(length>24*1024*1024)throw error('Segment too large. Reduce capture bitrate or segment duration.',413);chunks.push(chunk)}
+ if(length<1000)throw error('Capture segment was empty.',422);
+ const output=path.join(job.dir,'part-'+String(job.uploadIndex++).padStart(6,'0')+'.webm');
+ fs.writeFileSync(output,Buffer.concat(chunks));
+ job.status='recording';job.error='';
+ job.captureDetails={width:Number(req.headers['x-capture-width']||0),height:Number(req.headers['x-capture-height']||0),frameRate:Number(req.headers['x-capture-fps']||0),audio:req.headers['x-capture-audio']==='true'};
+ const parts=scan(job);for(const part of parts.slice(0,Math.max(0,parts.length-MAX_SEGMENTS))){try{fs.unlinkSync(part.file)}catch{}}
+ return {ok:true,segments:parts.length,bytes:length};
+}
+export function finishBrowserRecording(id,token){
+ const job=readJob(id,token);
+ if(job.provider!=='Browser tab capture')throw error('Not a browser capture session.',422);
+ job.chatStop=true;
+ if(job.status==='recording'||job.status==='starting')job.status='finished';
+ if(job.timer)clearInterval(job.timer);job.timer=null;
+ return view(job);
 }
 export function status(id,token){return view(readJob(id,token))}
 export function stop(id,token){const job=readJob(id,token);if(job.status!=='stopped'){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped'}return {ok:true,retainedClips:job.clips.filter(c=>c.state==='ready').length}}

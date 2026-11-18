@@ -47,18 +47,32 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. Private beta only. YouTube and Twitch/Kick link capture are experimental; use with streams you own or are authorized to record. Compatibility is not guaranteed. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
 </main><script>
 const $=id=>document.getElementById(id);let jobId='',token='',activeURL='',statusTimer=null;
+function clearSession(reason=''){
+ if(statusTimer){clearInterval(statusTimer);statusTimer=null}
+ sessionStorage.removeItem('hypeclip-v2-session');
+ jobId='';token='';
+ $('clip').disabled=true;$('stop').disabled=true;
+ $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';
+ if(reason)$('jobStatus').textContent=reason;
+}
+function isSessionError(e){return e&&[401,403,404,410].includes(e.status)}
+
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=d=>new Date(d).toLocaleString();
 async function request(url,method='GET',body=null){
  const opts={method,headers:{...(jobId?{'X-HypeClip-Token':token}:{})}};
  if(body){opts.headers['Content-Type']='application/json';opts.body=JSON.stringify(body)}
- const res=await fetch(url,opts),data=await res.json();
- if(!res.ok)throw Error(data.error||'Request failed');
+ const res=await fetch(url,opts);
+ let data;
+ try{data=await res.json()}catch{throw Object.assign(new Error(res.status===401?'Private beta login required. Refresh and sign in.':'Server returned an invalid response.'),{status:res.status})}
+ if(!res.ok)throw Object.assign(new Error(data.error||'Request failed'),{status:res.status});
  return data;
 }
 function message(text,isError=false){$('result').textContent=text;$('result').className=isError?'bad':''}
 $('inspect').onclick=async()=>{
  $('recordOptions').classList.add('hidden');activeURL=$('url').value.trim();
+ if(jobId){message('A recording session is already active. Stop it before starting another.');return}
+ try{sessionStorage.setItem('hypeclip-v2-last-url',activeURL)}catch{}
  $('inspect').disabled=true;message('Checking platform...');
  try{const data=await request('/api/v2/inspect','POST',{url:activeURL});
  message(data.provider+' • '+data.status+'\n'+data.reason,data.status!=='ready');
@@ -69,10 +83,11 @@ $('startJob').onclick=async()=>{
  $('startJob').disabled=true;
  try{
  const data=await request('/api/v2/jobs','POST',{url:activeURL,confirmedRights:$('rights').checked});
- jobId=data.job.id;token=data.token;sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token}));
- $('jobStatus').textContent='Recording started. Keep the source broadcasting; the server collects video segments independently of this tab.';
- $('clip').disabled=false;$('stop').disabled=false;await poll();
- if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000);
+ jobId=data.job.id;token=data.token;sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:activeURL}));
+ $('jobStatus').textContent='Recording started. The server is preparing video segments.';
+ $('clip').disabled=false;$('stop').disabled=false;
+ const active=await poll();
+ if(active){if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000)}
  }catch(e){$('jobStatus').textContent='Cannot start recording: '+e.message}
  finally{$('startJob').disabled=false}
 };
@@ -86,30 +101,60 @@ function renderClips(clips){
  return '<div class="slot" style="margin-bottom:11px"><div><b>Clip '+esc(c.id.slice(0,8))+'</b> <span class="badge">'+esc(c.state)+'</span></div><div class="muted" style="margin-top:7px">'+esc(c.metadata?.triggerUTC||fmt(c.createdAt))+(c.error?' • '+esc(c.error):'')+'</div>'+links+'</div>';
  }).join(''):'<p class="hint">No clips yet. Buffer some footage, then save a highlight.</p>';
 }
-async function poll(){if(!jobId||!token)return;try{
- const j=await request('/api/v2/jobs/'+jobId);
+async function poll(){if(!jobId||!token)return false;try{
+ const currentId=jobId;
+ const j=await request('/api/v2/jobs/'+currentId);
+ if(currentId!==jobId)return false;
  $('jobState').textContent=j.status;$('segments').textContent=j.segments;$('elapsed').textContent=j.elapsedSeconds+'s';
  $('jobBadge').textContent=j.status==='recording'?'● Recording':'● '+j.status;
  $('jobStatus').textContent=j.error?'Recorder: '+j.error:(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
  $('clip').disabled=j.status!=='recording';$('stop').disabled=j.status!=='recording';
  renderClips(j.clips);
  if(j.status!=='recording'&&j.status!=='starting'&&statusTimer){clearInterval(statusTimer);statusTimer=null}
- }catch(e){$('jobStatus').textContent=e.message}}
+ return true;
+ }catch(e){
+   if(isSessionError(e)){
+     clearSession('Your previous recording session expired or was lost when Render restarted. Enter the livestream link again and click Start background recording.');
+     message('Session expired. Your previous clip files are no longer available. You can start a new recording.',true);
+     return false;
+   }
+   $('jobStatus').textContent='Could not check recording status: '+e.message;
+   return true;
+ }}
 $('clip').onclick=async()=>{
  $('clip').disabled=true;$('jobStatus').textContent='Requesting MP4 clip...';
  try{const before=Number($('before').value),after=Number($('after').value);if(before+after>65)throw Error('Total clip duration must be 65 seconds or less.');
  await request('/api/v2/jobs/'+jobId+'/clips','POST',{before,after,quality:$('quality').value});
  $('jobStatus').textContent='Clip is queued. It will include video after the trigger and may take time to encode.';
  await poll();
- }catch(e){$('jobStatus').textContent=e.message}finally{$('clip').disabled=false}
+ }catch(e){
+   if(isSessionError(e)){clearSession('Session expired. Start another recording to create clips.');return}
+   $('jobStatus').textContent=e.message;
+ }finally{$('clip').disabled=!jobId}
 };
-$('stop').onclick=async()=>{try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});sessionStorage.removeItem('hypeclip-v2-session');$('jobStatus').textContent='Recording stopped. Temporary files from this session were removed.';jobId='';token='';if(statusTimer)clearInterval(statusTimer);$('clip').disabled=true;$('stop').disabled=true}catch(e){$('jobStatus').textContent=e.message}};
+$('stop').onclick=async()=>{
+ try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});clearSession('Recording stopped. Temporary files from this session were removed.')}
+ catch(e){if(isSessionError(e))clearSession('Previous recording session expired. You can start a new recording.');else $('jobStatus').textContent=e.message}
+};
 $('clips').addEventListener('click',async e=>{
  const btn=e.target.closest('button.file');if(!btn)return;
  btn.disabled=true;const label=btn.textContent;btn.textContent='Downloading...';
  try{const resp=await fetch(btn.dataset.url,{headers:{'X-HypeClip-Token':token}});if(!resp.ok){const d=await resp.json();throw Error(d.error||'Download failed')}
  const blob=await resp.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=btn.dataset.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
- }catch(err){$('jobStatus').textContent='Download error: '+err.message}finally{btn.disabled=false;btn.textContent=label}
+ }catch(err){
+   if(isSessionError(err)){clearSession('Recording session expired. Your previous clip files are no longer available.');return}
+   $('jobStatus').textContent='Download error: '+err.message
+ }finally{btn.disabled=false;btn.textContent=label}
 });
-try{const saved=JSON.parse(sessionStorage.getItem('hypeclip-v2-session')||'null');if(saved?.id&&saved?.token){jobId=saved.id;token=saved.token;poll();statusTimer=setInterval(poll,3000);$('stop').disabled=false}}catch{}
+try{
+ const saved=JSON.parse(sessionStorage.getItem('hypeclip-v2-session')||'null');
+ const lastURL=saved?.url||sessionStorage.getItem('hypeclip-v2-last-url')||'';
+ if(lastURL){$('url').value=lastURL;activeURL=lastURL}
+ if(saved?.id&&saved?.token){
+  jobId=saved.id;token=saved.token;
+  $('jobStatus').textContent='Checking whether your saved recording session is still available...';
+  $('stop').disabled=false;
+  poll().then(active=>{if(active&&jobId){if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000)}});
+ }
+}catch{clearSession('Enter a stream URL to start a new recording.')}
 </script></body></html>

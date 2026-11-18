@@ -27,7 +27,7 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <section class="hero"><div class="eyebrow">LIVESTREAM HIGHLIGHTS</div><h1>One link. Cleaner clips.</h1><p>Private beta: paste your own or an authorized livestream URL. HypeClip attempts clean server-side capture, and YouTube live-chat activity can trigger MP4 highlights automatically.</p></section>
 <div class="grid"><section class="panel">
 <h2>1. Paste a livestream</h2><label for="url">Public livestream or authorized direct HLS URL</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=...">
-<div class="controls"><button id="inspect">Check stream support</button><span class="hint">YouTube • Twitch • Kick • Facebook • Direct HLS</span></div>
+<div class="controls"><button id="inspect">Check stream support</button><button id="demo" type="button" class="secondary">▶ Test recording without YouTube</button><span class="hint">YouTube • Twitch • Kick • Direct HLS</span></div>
 <div id="result" role="status">Enter a URL to check what this service can do.</div>
 <div id="recordOptions" class="hidden"><label><input id="rights" type="checkbox" style="width:auto;margin-right:9px">I own this stream or have permission to record it.</label>
 <div class="controls"><button id="startJob">Start background recording</button></div></div>
@@ -36,7 +36,7 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <label for="before">Seconds before moment</label><select id="before"><option value="10">10 seconds</option><option value="20" selected>20 seconds</option><option value="30">30 seconds</option><option value="40">40 seconds</option></select>
 <label for="after">Seconds after moment</label><select id="after"><option value="10" selected>10 seconds</option><option value="20">20 seconds</option><option value="30">30 seconds</option></select>
 <label for="quality">Output quality</label><select id="quality"><option value="1080" selected>1080p • best available source detail</option><option value="720">720p</option><option value="480">480p</option></select>
-<div class="note">Test jobs run for up to 10 minutes and can produce up to five clips. This temporary Render instance allows one active job at a time. Video clips are deleted on service restart.</div>
+<div class="note">Try the built-in test recording to verify the complete MP4 download flow without an external stream. Test jobs run for up to 10 minutes and can produce up to five clips. This temporary Render instance allows one active job at a time. Video clips are deleted on service restart.</div>
 </section></div>
 <section class="panel" id="jobPanel"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2>3. Your recording session</h2><span id="jobBadge" class="badge">Not started</span></div>
 <div class="slots"><div class="slot"><div class="muted">Status</div><div id="jobState" class="num" style="font-size:17px">Idle</div></div><div class="slot"><div class="muted">Buffered segments</div><div id="segments" class="num">0</div></div><div class="slot"><div class="muted">Elapsed</div><div id="elapsed" class="num">0s</div></div></div>
@@ -69,6 +69,21 @@ async function request(url,method='GET',body=null){
  return data;
 }
 function message(text,isError=false){$('result').textContent=text;$('result').className=isError?'bad':''}
+$('demo').onclick=async()=>{
+ if(jobId){message('Stop the active recording before starting a test.',true);return}
+ $('demo').disabled=true;message('Starting a server-generated test video (no external links or screen sharing)...');
+ try{
+  const data=await request('/api/v2/jobs','POST',{url:'demo://test-pattern',confirmedRights:true});
+  jobId=data.job.id;token=data.token;
+  sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:''}));
+  $('recordOptions').classList.add('hidden');
+  $('jobStatus').textContent='Recording generated test footage on the server. Let the segment counter reach at least 5 before clipping.';
+  $('clip').disabled=false;$('stop').disabled=false;await poll();
+  if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000);
+  message('Synthetic test video is recording. You can test MP4, CSV, and JSON downloads below.');
+ }catch(e){message('Could not start test: '+e.message,true)}
+ finally{$('demo').disabled=false}
+};
 $('inspect').onclick=async()=>{
  $('recordOptions').classList.add('hidden');activeURL=$('url').value.trim();
  if(jobId){message('A recording session is already active. Stop it before starting another.');return}
@@ -133,7 +148,7 @@ $('clip').onclick=async()=>{
  }finally{$('clip').disabled=!jobId}
 };
 $('stop').onclick=async()=>{
- try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});clearSession('Recording stopped. Temporary files from this session were removed.')}
+ try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});$('jobStatus').textContent='Recording stopped. Generated clips remain downloadable until the session expires or server restarts.';$('clip').disabled=true;$('stop').disabled=true;if(statusTimer){clearInterval(statusTimer);statusTimer=null}await poll()}
  catch(e){if(isSessionError(e))clearSession('Previous recording session expired. You can start a new recording.');else $('jobStatus').textContent=e.message}
 };
 $('clips').addEventListener('click',async e=>{

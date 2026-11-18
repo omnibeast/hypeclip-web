@@ -78,6 +78,7 @@ $('demo').onclick=async()=>{
   sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:''}));
   $('recordOptions').classList.add('hidden');
   $('jobStatus').textContent='Recording generated test footage on the server. Let the segment counter reach at least 5 before clipping.';
+  $('before').value='10';$('after').value='10';
   $('clip').disabled=false;$('stop').disabled=false;await poll();
   if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000);
   message('Synthetic test video is recording. You can test MP4, CSV, and JSON downloads below.');

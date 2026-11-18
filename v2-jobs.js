@@ -47,7 +47,15 @@ function scan(job){
  return names.map(n=>{const file=path.join(job.dir,n),s=fs.statSync(file);return {file,at:s.mtimeMs,size:s.size}}).filter(s=>s.size>200);
 }
 function view(job){const segs=scan(job);return {id:job.id,provider:job.provider,status:job.status,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}}
-function readJob(id,token){const job=jobs.get(id);if(!job||!token||token!==job.token)throw error('Job not found or access token invalid.',404);return job}
+function readJob(id,token){
+ const job=jobs.get(id);
+ // Render free instances use ephemeral memory; jobs expire on redeploy or restart.
+ if(!job)throw error('Recording session expired or was lost after the server restarted. Start a new recording.',410);
+ if(typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token))throw error('Missing or invalid recording session token. Start a new recording.',401);
+ const a=Buffer.from(token,'hex'),b=Buffer.from(job.token,'hex');
+ if(a.length!==b.length||!crypto.timingSafeEqual(a,b))throw error('Recording session token does not match this job. Start a new recording.',403);
+ return job;
+}
 function securityToken(req){return String(req.headers['x-hypeclip-token']||'')}
 export async function start({url,confirmedRights},req){
  if(!confirmedRights)throw error('Confirm you own or have permission to record this video source.');

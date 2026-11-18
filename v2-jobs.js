@@ -96,7 +96,7 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
  const child=spawn(ffmpeg,args,{stdio:[isDemo||isDirectHls?'ignore':'pipe','ignore','pipe']});job.child=child;job.status='recording';
  child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
  child.on('error',e=>{job.error='FFmpeg recorder launch failed: '+e.message;job.status='failed';job.child=null});
- child.on('close',c=>{if(job.child===child){job.child=null;job.status='failed';job.error=job.error||'Recorder closed unexpectedly ('+c+').' }});
+ child.on('close',c=>{if(job.child===child){job.child=null;if(job.status==='recording'||job.status==='starting'){job.status='failed';job.error=job.error||'Recorder closed unexpectedly ('+c+').'} }});
  if(!isDirectHls&&!isDemo){
    // Only the canonical platform URL (never an arbitrary host) reaches the extractor.
    // No cookies, login state, special headers, DRM circumvention or bypass options.

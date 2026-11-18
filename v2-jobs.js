@@ -8,7 +8,7 @@ import ffmpeg from 'ffmpeg-static';
 import youtubedl from 'youtube-dl-exec';
 import {bestHlsUrl} from './server-hls.js';
 
-const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5, HISTORY_LIMIT=180;
+const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5, MAX_MARKERS=60, HISTORY_LIMIT=180;
 const DEMO_SOURCE='demo://test-pattern';
 const guid=()=>crypto.randomUUID(),safeId=s=>/^[a-f0-9-]{36}$/.test(s||'');
 function error(message,status=400){return {error:message,status}}
@@ -57,7 +57,7 @@ function recordHype(job,rate,baseline=0,unique=0,source='chat'){
 function view(job){
  const segs=scan(job);const bufferedBytes=segs.reduce((n,x)=>n+x.size,0);
  const recordingHealth=job.status==='starting'?'starting':job.status==='recording'&&!segs.length?'waiting-for-video':job.status==='recording'?'buffering':job.status;
- return {id:job.id,provider:job.provider,status:job.status,recordingHealth,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,bufferedBytes,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,hypeHistory:job.hypeHistory||[],clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}
+ return {id:job.id,provider:job.provider,status:job.status,recordingHealth,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,bufferedBytes,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,hypeHistory:job.hypeHistory||[],markers:job.markers||[],clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}
 }
 function readJob(id,token){
  const job=jobs.get(id);
@@ -111,7 +111,7 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
  const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],chatStop:false};jobs.set(id,job);
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],markers:[],streamStartedAt:null,chatStop:false};jobs.set(id,job);
  let extractor=null;
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
  const output=path.join(dir,'part-%06d.ts');
@@ -178,6 +178,23 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
  return {job:view(job),token};
 }
 
+function makeMarker(job,kind='manual',at=Date.now(),rate=null){
+ const id=videoId(job.chatVideoUrl||'');
+ const offset=Number.isFinite(job.streamStartedAt)?Math.max(0,Math.floor((at-job.streamStartedAt)/1000)):null;
+ const shareUrl=/^[a-zA-Z0-9_-]{11}$/.test(id||'')&&offset!==null
+   ?'https://www.youtube.com/watch?v='+encodeURIComponent(id)+'&t='+offset+'s':null;
+ const marker={id:guid(),kind,at:new Date(at).toISOString(),videoId:id||null,
+  streamOffsetSeconds:offset,shareUrl,chatRate:rate,
+  note:shareUrl?'Approximate stream timestamp; YouTube DVR or archive availability may vary. This is a link, not an MP4.':'UTC event saved. Stream start time unavailable, so a reliable video offset cannot be calculated. No MP4 was captured.'};
+ job.markers.unshift(marker);if(job.markers.length>MAX_MARKERS)job.markers.length=MAX_MARKERS;
+ return marker;
+}
+export function markMoment(id,token){
+ const job=readJob(id,token);
+ if(!job.chatVideoUrl)throw error('Timestamp moments require a YouTube livestream session.',422);
+ if(!['recording','chat-only'].includes(job.status))throw error('Chat monitoring is not active. Start a new session.',422);
+ return makeMarker(job,'manual');
+}
 function videoId(raw){
  const u=new URL(raw);
  if(u.hostname==='youtu.be')return u.pathname.split('/')[1];
@@ -198,7 +215,10 @@ async function monitorChat(job,url){
   const id=videoId(url);
   if(!/^[a-zA-Z0-9_-]{11}$/.test(id||''))throw Error('Invalid YouTube live video ID');
   const video=await youtubeAPI('videos',{part:'liveStreamingDetails',id});
-  const chatId=video.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
+  const liveDetails=video.items?.[0]?.liveStreamingDetails;
+  const started=Date.parse(liveDetails?.actualStartTime||'');
+  if(Number.isFinite(started))job.streamStartedAt=started;
+  const chatId=liveDetails?.activeLiveChatId;
   if(!chatId)throw Error('Live chat is disabled or stream is not currently live.');
   job.chat.status='monitoring';
   while(!job.chatStop&&(job.status==='recording'||job.status==='chat-only')){
@@ -221,9 +241,13 @@ async function monitorChat(job,url){
     job.chat.count+=arrivals.length;job.chat.recentRate=last10.length;job.chat.baseline=Math.round(baseline*10)/10;
     job.chat.status='monitoring';job.chat.error='';
     recordHype(job,last10.length,baseline,unique,'youtube-chat');
-    if(job.status==='recording'&&scan(job).length>=2&&now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
+    const isSpike=now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000;
+    if(isSpike){
       lastEvent=now;job.chat.lastEvent=new Date(now).toISOString();
-      void createClip(job.id,job.token,{before:25,after:20,quality:'1080',automatic:true}).catch(e=>{job.chat.error=e.error||e.message});
+      makeMarker(job,'automatic',now,last10.length);
+      if(job.status==='recording'&&scan(job).length>=2&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
+        void createClip(job.id,job.token,{before:25,after:20,quality:'1080',automatic:true}).catch(e=>{job.chat.error=e.error||e.message});
+      }
     }
    }catch(e){job.chat.error=String(e.message).slice(0,180);pause=15000}
    await new Promise(r=>setTimeout(r,pause));

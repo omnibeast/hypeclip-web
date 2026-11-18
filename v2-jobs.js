@@ -59,18 +59,24 @@ function readJob(id,token){
  return job;
 }
 function securityToken(req){return String(req.headers['x-hypeclip-token']||'')}
-export async function start({url,confirmedRights},req){
+export async function start({url,confirmedRights,captureHlsUrl},req){
  if(!confirmedRights)throw error('Confirm you own or have permission to record this video source.');
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
  const active=[...jobs.values()].filter(j=>j.status==='recording');
  if(active.length>=ACTIVE_LIMIT)throw error('The test server is currently recording another stream. Try again after that job finishes.',429);
- const parsed=provider(url);if(parsed.status!=='ready')throw error(parsed.reason,422);
+ const original=provider(url);
+ const hasBackup=typeof captureHlsUrl==='string'&&captureHlsUrl.trim().length>0;
+ if(hasBackup&&original.provider!=='YouTube')throw error('The optional authorized video feed is intended for YouTube Live.',422);
+ if(hasBackup&&captureHlsUrl.length>2048)throw error('Authorized video feed URL is too long.');
+ const source=hasBackup?captureHlsUrl.trim():url;
+ const parsed=provider(source);if(parsed.status!=='ready')throw error(parsed.reason,422);
+ if(hasBackup&&parsed.provider!=='Direct HLS')throw error('The alternate source must be an approved HTTPS .m3u8 playlist.',422);
  const isDemo=parsed.provider==='Built-in video test';
  const isDirectHls=parsed.provider==='Direct HLS';
- const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(url):new URL(url).toString();
+ const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:parsed.provider,error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null},chatStop:false};jobs.set(id,job);
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null},chatStop:false};jobs.set(id,job);
  let extractor=null;
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
  const output=path.join(dir,'part-%06d.ts');
@@ -132,7 +138,7 @@ export async function start({url,confirmedRights},req){
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }
  job.timer=setInterval(()=>{if(Date.now()>job.expiresAt&&job.status==='recording'){job.chatStop=true;job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
- if(job.provider==='YouTube'&&process.env.YOUTUBE_API_KEY)void monitorChat(job,validated);
+ if(job.chatVideoUrl&&process.env.YOUTUBE_API_KEY)void monitorChat(job,job.chatVideoUrl);
  return {job:view(job),token};
 }
 

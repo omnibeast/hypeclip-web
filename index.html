@@ -24,7 +24,7 @@ small{color:#87a7bd}.empty{color:#7790a6;font-size:13px}.error{color:#ff9b9b;mar
 <div class="row"><section class="card"><h1>Watch the hype happen.</h1><p>Paste a YouTube livestream link, monitor live-chat frequency, and spot viral moments as they happen.</p>
 <label for="url">Livestream URL</label><input id="url" value="https://www.youtube.com/watch?v=3QjXNSf6keg" placeholder="https://youtube.com/watch?v=...">
 <label for="mode">Monitoring mode</label><select id="mode"><option value="demo">Demo / simulated live chat</option><option value="youtube">Actual YouTube live chat</option></select>
-<label for="sensitivity">Detection sensitivity</label><select id="sensitivity"><option value="high">High • more spikes</option><option value="balanced" selected>Balanced</option><option value="low">Low • major spikes only</option></select><div class="settings-box"><div class="titlebar"><h2>⚙ Clip duration settings</h2><span class="tag">MP4</span></div><p class="settings-note">Set how many seconds are recorded before and after the moment. Separate settings apply to automatic hype and manual clips.</p><div class="settings-group"><b>Automatic hype clips</b><div class="settings-grid"><div><label for="autoBefore">Seconds before hype</label><input id="autoBefore" type="number" min="5" max="55" step="1" value="25"></div><div><label for="autoAfter">Seconds after hype</label><input id="autoAfter" type="number" min="5" max="55" step="1" value="20"></div></div><div id="autoTotal" class="settings-total">Total: 45 seconds</div></div><div class="settings-group"><b>Manual test clips</b><div class="settings-grid"><div><label for="manualBefore">Seconds before click</label><input id="manualBefore" type="number" min="5" max="55" step="1" value="25"></div><div><label for="manualAfter">Seconds after click</label><input id="manualAfter" type="number" min="5" max="55" step="1" value="10"></div></div><div id="manualTotal" class="settings-total">Total: 35 seconds</div></div><p class="settings-note">Each side: 5–55 seconds. Combined length: 65 seconds maximum. Actual length depends on available footage.</p><div class="buttons"><button id="savesettings" type="button">Save clip settings</button><button id="resetsettings" type="button" class="secondary">Reset defaults</button></div><div id="settingstatus" role="status" aria-live="polite"></div></div>
+<label for="sensitivity">Detection sensitivity</label><select id="sensitivity"><option value="high">High • more spikes</option><option value="balanced" selected>Balanced</option><option value="low">Low • major spikes only</option></select><div class="settings-box"><div class="titlebar"><h2>⚙ Clip duration settings</h2><span class="tag">MP4</span></div><p class="settings-note">Set how many seconds are recorded before and after the moment. Separate settings apply to automatic hype and manual clips.</p><div class="settings-group"><label for="quality">MP4 video quality</label><select id="quality"><option value="1080" selected>1080p • Full HD (recommended)</option><option value="720">720p • HD</option><option value="480">480p • Small file</option></select><p class="settings-note" style="margin-top:8px">Higher quality produces larger files and may encode more slowly. Start tab capture again after changing quality. Output will not improve video whose source is below the selected resolution.</p></div><div class="settings-group"><b>Automatic hype clips</b><div class="settings-grid"><div><label for="autoBefore">Seconds before hype</label><input id="autoBefore" type="number" min="5" max="55" step="1" value="25"></div><div><label for="autoAfter">Seconds after hype</label><input id="autoAfter" type="number" min="5" max="55" step="1" value="20"></div></div><div id="autoTotal" class="settings-total">Total: 45 seconds</div></div><div class="settings-group"><b>Manual test clips</b><div class="settings-grid"><div><label for="manualBefore">Seconds before click</label><input id="manualBefore" type="number" min="5" max="55" step="1" value="25"></div><div><label for="manualAfter">Seconds after click</label><input id="manualAfter" type="number" min="5" max="55" step="1" value="10"></div></div><div id="manualTotal" class="settings-total">Total: 35 seconds</div></div><p class="settings-note">Each side: 5–55 seconds. Combined length: 65 seconds maximum. Actual length depends on available footage.</p><div class="buttons"><button id="savesettings" type="button">Save clip settings</button><button id="resetsettings" type="button" class="secondary">Reset defaults</button></div><div id="settingstatus" role="status" aria-live="polite"></div></div>
 <div class="buttons"><button id="start">▶ Start monitoring</button><button id="stop" class="secondary">■ Stop</button></div><div class="buttons"><button id="capture" class="secondary">⏺ Capture livestream tab</button><button id="capturestop" class="secondary">Stop capture</button><button id="manualclip" class="secondary">✂ Create test MP4</button></div><div id="capturestatus" class="sub" style="margin-top:10px">Capture inactive. In Chrome/Edge, share the livestream tab with tab audio; keep this page open.</div><p class="sub" style="margin-top:10px">Open the livestream in another browser tab first, then select that tab in the screen-share picker. MP4s are temporary; download them before the server restarts. Clips are generated from the selected tab, not from a server-side YouTube downloader.</p><div id="error" class="error"></div></section>
 <section class="card"><div class="titlebar"><h2>Session</h2><span class="tag" id="modebadge">DEMO READY</span></div><p id="sessiontitle">No monitoring session yet</p><div class="stats"><div class="stat"><div class="muted">Total messages</div><div class="number" id="total">0</div></div><div class="stat"><div class="muted">Chat / 10 sec</div><div class="number" id="rate">0</div></div><div class="stat"><div class="muted">Peak activity</div><div class="number" id="peak">0</div></div><div class="stat"><div class="muted">Hype moments</div><div class="number" id="hypes">0</div></div></div><p style="margin-top:18px;font-size:12px">Baseline chat activity: <b id="baseline">0</b> / 10 sec</p></section></div>
 <section class="card"><div class="titlebar"><h2>Chat velocity • last ~3 min</h2><span class="sub">Messages per 10 seconds</span></div><div class="chart" id="chart"><span class="empty">Start monitoring to see the chart.</span></div></section>
@@ -48,14 +48,14 @@ $('events').innerHTML=(s.events||[]).length?s.events.map(e=>'<div class="event">
 }
 
 const settingsKeys=['autoBefore','autoAfter','manualBefore','manualAfter'];
-const defaults={autoBefore:25,autoAfter:20,manualBefore:25,manualAfter:10};
+const defaults={autoBefore:25,autoAfter:20,manualBefore:25,manualAfter:10,quality:'1080'};
 let settingsTouched=false;
-function readSettings(){return Object.fromEntries(settingsKeys.map(k=>[k,Number($(k).value)]))}
-function setFields(settings){for(const k of settingsKeys)$(k).value=settings[k]??defaults[k];updateTotals()}
+function readSettings(){return {...Object.fromEntries(settingsKeys.map(k=>[k,Number($(k).value)])),quality:$('quality').value}}
+function setFields(settings){for(const k of settingsKeys)$(k).value=settings[k]??defaults[k];$('quality').value=settings.quality||defaults.quality;updateTotals()}
 function updateTotals(){const values=readSettings();for(const mode of ['auto','manual']){const total=values[mode+'Before']+values[mode+'After'],el=$(mode+'Total');el.textContent='Total: '+total+' seconds'+(total>65?' (maximum 65)':'');el.style.color=total>65?'#ff9999':'#60e5cb'}}
-function validateSettings(values){if(settingsKeys.some(k=>!Number.isInteger(values[k])||values[k]<5||values[k]>55))throw Error('Use whole numbers from 5 to 55 seconds.');if(values.autoBefore+values.autoAfter>65||values.manualBefore+values.manualAfter>65)throw Error('Each clip must be 65 seconds or less.');return values}
+function validateSettings(values){if(!['480','720','1080'].includes(values.quality))throw Error('Choose 480p, 720p, or 1080p.');if(settingsKeys.some(k=>!Number.isInteger(values[k])||values[k]<5||values[k]>55))throw Error('Use whole numbers from 5 to 55 seconds.');if(values.autoBefore+values.autoAfter>65||values.manualBefore+values.manualAfter>65)throw Error('Each clip must be 65 seconds or less.');return values}
 async function saveSettings(){const b=$('savesettings');b.disabled=true;try{const values=validateSettings(readSettings());const r=await api('/api/settings',values);localStorage.setItem('hypeclip-clip-settings',JSON.stringify(r.settings));settingsTouched=false;$('settingstatus').textContent='✓ Settings saved; new clips use these durations.'}catch(e){$('settingstatus').textContent='⚠ '+e.message}finally{b.disabled=false}}
-for(const k of settingsKeys)$(k).addEventListener('input',()=>{settingsTouched=true;updateTotals();$('settingstatus').textContent='Unsaved changes — click Save clip settings.'});
+for(const k of [...settingsKeys,'quality'])$(k).addEventListener('input',()=>{settingsTouched=true;updateTotals();$('settingstatus').textContent='Unsaved changes — click Save clip settings.'});
 $('savesettings').onclick=saveSettings;
 $('resetsettings').onclick=()=>{setFields(defaults);settingsTouched=true;$('settingstatus').textContent='Defaults restored; click Save clip settings to apply.'};
 try{const saved=JSON.parse(localStorage.getItem('hypeclip-clip-settings')||'null');if(saved)setFields(validateSettings(saved))}catch{setFields(defaults)}
@@ -80,7 +80,8 @@ function scheduleSegment(){
  let chunks=[];
  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')?'video/webm;codecs=vp8,opus':'video/webm';
  let recorder;
- try{recorder=new MediaRecorder(sourceStream,{mimeType:mime,videoBitsPerSecond:750000,audioBitsPerSecond:64000})}
+ const videoBitrates={'480':2000000,'720':4000000,'1080':6500000};
+ try{recorder=new MediaRecorder(sourceStream,{mimeType:mime,videoBitsPerSecond:videoBitrates[$('quality').value]||6500000,audioBitsPerSecond:160000})}
  catch(e){captureMessage('Cannot start browser recording: '+e.message);stopCapture();return}
  segmentRecorder=recorder;
  recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
@@ -90,7 +91,7 @@ function scheduleSegment(){
  };
  recorder.onerror=e=>captureMessage('Recorder error: '+(e.error?.message||'Unknown error'));
  recorder.start();
- captureTimer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop()},3500);
+ captureTimer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop()},3000);
 }
 async function stopCapture(){
  isCapturing=false;
@@ -104,13 +105,15 @@ $('capture').onclick=async()=>{
  if(isCapturing)return;
  if(!navigator.mediaDevices?.getDisplayMedia||!window.MediaRecorder){captureMessage('Use desktop Chrome or Edge with screen sharing enabled.');return}
  try{
- sourceStream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:15},audio:true,preferCurrentTab:false});
+ sourceStream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:30,width:{ideal:1920},height:{ideal:1080}},audio:true,preferCurrentTab:false});
  if(!sourceStream.getVideoTracks().length)throw Error('No video track shared');
+ const v=sourceStream.getVideoTracks()[0].getSettings(),actualH=v.height||0,requested=Number($('quality').value);
+ if(actualH&&actualH<requested)captureMessage('Source capture is '+(v.width||'?')+' × '+actualH+'; '+requested+'p output cannot create extra detail. Use the video player quality menu to select HD.');
  if(!sourceStream.getAudioTracks().length)captureMessage('Tab capture started (no audio shared)');
  isCapturing=true;
  sourceStream.getVideoTracks()[0].addEventListener('ended',()=>stopCapture(),{once:true});
  scheduleSegment();
- if(sourceStream.getAudioTracks().length)captureMessage('Recording started with audio. Waiting for video segments...');
+ if(sourceStream.getAudioTracks().length)captureMessage('Recording '+(v.width||'?')+' × '+(v.height||'?')+' with audio at '+$('quality').value+'p preset. Waiting for video segments...');
  }catch(e){captureMessage('Capture was not started: '+e.message)}
 };
 $('capturestop').onclick=()=>stopCapture();

@@ -46,11 +46,11 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 </section></div>
 <section class="panel" id="jobPanel"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2>3. Your recording session</h2><span id="jobBadge" class="badge">Not started</span></div>
 <div class="slots"><div class="slot"><div class="muted">Status</div><div id="jobState" class="num" style="font-size:17px">Idle</div></div><div class="slot"><div class="muted">Buffered segments</div><div id="segments" class="num">0</div></div><div class="slot"><div class="muted">Elapsed</div><div id="elapsed" class="num">0s</div></div></div>
-<div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="stop" class="secondary" disabled>Stop recording</button><button id="resetJob" class="secondary" type="button">Start fresh session</button></div>
+<div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="markMoment" class="secondary" disabled type="button">📍 Mark hype moment</button><button id="stop" class="secondary" disabled>Stop recording</button><button id="resetJob" class="secondary" type="button">Start fresh session</button></div>
 <div id="jobStatus" role="status">Start recording a livestream you own or have permission to record. For YouTube Live, chat spikes can also trigger automatic clips.</div>
 <div id="captureBlocked" class="hidden" style="margin-top:14px;padding:14px;border:1px solid #6a4750;border-radius:12px;background:#301c2b">
  <strong>Video capture unavailable</strong>
- <p class="hint" style="margin:8px 0 12px">YouTube chat is available, but this server cannot currently retrieve video. The clip button is disabled because there is no footage to clip. This is not a gray-button UI bug.</p>
+ <p class="hint" style="margin:8px 0 12px">YouTube chat is available, but this server cannot currently retrieve video. MP4 export needs video. You can still mark hype moments and copy approximate timestamp links independently of the native YouTube Clip option.</p>
  <div class="controls">
   <button id="switchDemo" class="secondary" type="button">Switch to working video test</button>
   <button id="newSource" class="secondary" type="button">Try another video source</button>
@@ -65,7 +65,11 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <div class="chartLegend"><span><i class="legendDot"></i> Chat activity</span><span><i class="legendDash"></i> Baseline</span><span id="hypeWindow">Last 3 min</span></div>
 <div id="hypeMessage" class="hint">Start a YouTube Live session to see live chat analytics. The built-in test uses simulated chat activity, clearly marked as demo.</div>
 </section>
-<section class="panel"><h2>4. Your clips and time logs</h2><div id="clips"><p class="hint">Completed clips appear here with MP4, CSV timestamp log and JSON metadata downloads.</p></div></section>
+<section class="panel"><h2>4. Hype moments & links</h2>
+<p class="hint">Independent of the YouTube Clips setting. In chat-only mode, HypeClip can save timestamps and share an approximate YouTube time link when the stream start time is known. These are not downloadable MP4s.</p>
+<div id="momentList"><p class="hint">Start a YouTube chat session and click Mark hype moment, or let hype spikes create automatic markers.</p></div>
+</section>
+<section class="panel"><h2>5. Downloadable MP4 clips</h2><div id="clips"><p class="hint">Completed clips appear here with MP4, CSV timestamp log and JSON metadata downloads.</p></div></section>
 <footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. Private beta only. YouTube and Twitch/Kick link capture are experimental; use with streams you own or are authorized to record. Compatibility is not guaranteed. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
 </main><script>
 const $=id=>document.getElementById(id);let jobId='',token='',activeURL='',statusTimer=null;
@@ -73,8 +77,9 @@ function clearSession(reason=''){
  if(statusTimer){clearInterval(statusTimer);statusTimer=null}
  sessionStorage.removeItem('hypeclip-v2-session');
  jobId='';token='';
- $('clip').disabled=true;$('stop').disabled=true;$('captureBlocked').classList.add('hidden');
+ $('clip').disabled=true;$('markMoment').disabled=true;$('stop').disabled=true;$('captureBlocked').classList.add('hidden');
  $('clips').innerHTML='<p class="hint">Clips from the previous session are no longer shown. Start a new recording to create more.</p>';
+ $('momentList').innerHTML='<p class="hint">Start a YouTube session to mark highlight timestamps.</p>';
  $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';plotHype([]);
  if(reason)$('jobStatus').textContent=reason;
 }
@@ -170,6 +175,26 @@ $('startJob').onclick=async()=>{
 function fileButton(label,url,filename){
  return '<button type="button" class="secondary file" data-url="'+esc(url)+'" data-name="'+esc(filename)+'">'+label+'</button>'
 }
+function renderMoments(markers){
+ $('momentList').innerHTML=markers.length?markers.map(m=>{
+  const link=m.shareUrl?'<button type="button" class="secondary copyMoment" data-link="'+esc(m.shareUrl)+'">Copy approximate time link</button>':'';
+  return '<div class="slot" style="margin-bottom:10px"><b>'+esc(m.kind==='automatic'?'Auto-detected hype':'Manual marker')+'</b> <span class="badge">'+esc(new Date(m.at).toLocaleTimeString())+'</span>'+
+    '<div class="muted" style="margin:7px 0">'+(m.streamOffsetSeconds===null?'UTC time saved; stream start unavailable':'Approx. '+esc(m.streamOffsetSeconds)+' sec from stream start')+(m.chatRate!==null?' • '+esc(m.chatRate)+' messages/10 sec':'')+'</div>'+
+    '<div class="hint">'+esc(m.note)+'</div>'+link+'</div>';
+ }).join(''):'<p class="hint">No marked moments yet. Use Mark hype moment, or wait for a chat spike.</p>';
+}
+$('momentList').addEventListener('click',async e=>{
+ const btn=e.target.closest('button.copyMoment');if(!btn)return;
+ try{await navigator.clipboard.writeText(btn.dataset.link);$('jobStatus').textContent='Approximate timestamp link copied. It is not a downloadable clip.'}
+ catch{window.prompt('Copy this YouTube timestamp link:',btn.dataset.link)}
+});
+$('markMoment').onclick=async()=>{
+ if(!jobId)return;
+ $('markMoment').disabled=true;
+ try{await request('/api/v2/jobs/'+jobId+'/mark','POST',{});await poll()}
+ catch(e){$('jobStatus').textContent='Unable to mark timestamp: '+e.message}
+ finally{$('markMoment').disabled=false}
+};
 function renderClips(clips){
  $('clips').innerHTML=clips.length?clips.map(c=>{
  const base='/api/v2/jobs/'+jobId+'/clips/'+c.id;
@@ -211,8 +236,8 @@ async function poll(){if(!jobId||!token)return false;try{
  plotHype(j.hypeHistory,j.chat);
  $('captureBlocked').classList.toggle('hidden',j.status!=='chat-only'&&j.status!=='failed');
  $('jobStatus').textContent=j.status==='chat-only'?'Chat monitoring is active, but NO VIDEO was captured. MP4 clipping is unavailable. '+(j.error||'Video source is blocked'):j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
- $('clip').disabled=j.status!=='recording'||j.segments<2;$('stop').disabled=!['recording','chat-only','starting'].includes(j.status);
- renderClips(j.clips);
+ $('clip').disabled=j.status!=='recording'||j.segments<2;$('markMoment').disabled=!(['recording','chat-only'].includes(j.status)&&['YouTube','YouTube + clean HLS'].includes(j.provider));$('stop').disabled=!['recording','chat-only','starting'].includes(j.status);
+ renderClips(j.clips);renderMoments(j.markers||[]);
  if(!['recording','starting','chat-only'].includes(j.status)&&statusTimer){clearInterval(statusTimer);statusTimer=null}
  return true;
  }catch(e){

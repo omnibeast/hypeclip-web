@@ -24,14 +24,14 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 @media(max-width:750px){.grid{grid-template-columns:1fr}.slots{grid-template-columns:1fr 1fr}.hero{padding:28px 0 20px}header{padding:15px 18px}}
 </style></head><body><header><div class="brand">Hype<span>Clip</span> <small style="font-size:11px;color:#92b1c8">V2 BETA</small></div><span class="pill">URL → Highlights</span></header>
 <main>
-<section class="hero"><div class="eyebrow">LIVESTREAM HIGHLIGHTS</div><h1>One link. Cleaner clips.</h1><p>Paste a livestream URL to see if HypeClip supports it. Authorized video sources can be captured in the background without screen sharing.</p></section>
+<section class="hero"><div class="eyebrow">LIVESTREAM HIGHLIGHTS</div><h1>One link. Cleaner clips.</h1><p>Paste a livestream URL to see if HypeClip supports it. Public Twitch/Kick streams and authorized direct sources can be captured in the background when accessible, without screen sharing.</p></section>
 <div class="grid"><section class="panel">
 <h2>1. Paste a livestream</h2><label for="url">Public livestream or authorized direct HLS URL</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=...">
 <div class="controls"><button id="inspect">Check stream support</button><span class="hint">YouTube • Twitch • Kick • Facebook • Direct HLS</span></div>
 <div id="result" role="status">Enter a URL to check what this service can do.</div>
 <div id="recordOptions" class="hidden"><label><input id="rights" type="checkbox" style="width:auto;margin-right:9px">I own this stream or have permission to record it.</label>
 <div class="controls"><button id="startJob">Start background recording</button></div></div>
-<div class="note">Platform detection does not guarantee recording rights or access. YouTube's public watch URL and API key alone do not provide a raw downloadable video feed. We do not bypass DRM or access restrictions.</div>
+<div class="note">Platform detection does not guarantee recording rights or access. For Twitch and Kick, the server now attempts direct capture when allowed and accessible. YouTube requires separate platform approval for video recording. We do not bypass DRM, authentication, or access restrictions.</div>
 </section><section class="panel"><h2>2. Clip settings</h2>
 <label for="before">Seconds before moment</label><select id="before"><option value="10">10 seconds</option><option value="20" selected>20 seconds</option><option value="30">30 seconds</option><option value="40">40 seconds</option></select>
 <label for="after">Seconds after moment</label><select id="after"><option value="10" selected>10 seconds</option><option value="20">20 seconds</option><option value="30">30 seconds</option></select>
@@ -44,7 +44,7 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <div id="jobStatus" role="status">Start recording an approved video source to enable manual clips.</div>
 </section>
 <section class="panel"><h2>4. Your clips and time logs</h2><div id="clips"><p class="hint">Completed clips appear here with MP4, CSV timestamp log and JSON metadata downloads.</p></div></section>
-<footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. A watch-page URL is accepted for platform detection; provider recording integrations are not yet universally available. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
+<footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. Twitch/Kick public-source capture is experimental; YouTube recording requires provider approval. Compatibility is not guaranteed. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
 </main><script>
 const $=id=>document.getElementById(id);let jobId='',token='',activeURL='',statusTimer=null;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

@@ -56,7 +56,13 @@ async function v2Route(req,res,path){
  }catch(e){return json(res,{error:e.error||e.message||'Request failed'},e.status||400)}
 }
 
-http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if(path==='/v2'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});return res.end(v2html)}if(path.startsWith('/api/v2/'))return v2Route(req,res,path);if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());
+http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if((path==='/v2'||path.startsWith('/api/v2/'))&&!authorized(req)){
+ res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Private Beta"','cache-control':'no-store'});
+ return res.end('Private beta login required');
+}
+if(path==='/v2'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});return res.end(v2html)}
+if(path.startsWith('/api/v2/'))return v2Route(req,res,path);
+if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());
 if(path==='/api/server-capture/start'&&req.method==='POST'){
  let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>8192)throw Error('Video source URL too long')}
  const opts=JSON.parse(raw||'{}');

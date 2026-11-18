@@ -28,7 +28,7 @@ async function validate(urlString){
  if(!records.length||records.some(x=>privateIp(x.address)))throw Error('The HLS server resolves to a restricted network address.');
  return u;
 }
-async function bestHlsUrl(url){
+export async function bestHlsUrl(url){
  // Choose the highest advertised variant from a standard HLS master playlist.
  // Media playlists (already a variant) are used unchanged.
  let body;

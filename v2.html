@@ -27,6 +27,16 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 </style></head><body><header><div class="brand">Hype<span>Clip</span> <small style="font-size:11px;color:#92b1c8">V2 BETA</small></div><span class="pill">URL → Highlights</span></header>
 <main>
 <section class="hero"><div class="eyebrow">LIVESTREAM HIGHLIGHTS</div><h1>One link. Cleaner clips.</h1><p>Private beta: paste your own or an authorized livestream URL. HypeClip attempts clean server-side capture, and YouTube live-chat activity can trigger MP4 highlights automatically.</p></section>
+<section class="panel" id="browserCapturePanel">
+ <div class="chartTop"><div><h2>High-quality tab / screen recording</h2><div class="hint">When YouTube video access fails on the server, record the tab you are watching and clip it in HypeClip.</div></div><span class="badge" id="browserBadge">Ready to capture</span></div>
+ <div class="grid">
+ <div><label for="browserPreset">Capture bitrate</label><select id="browserPreset"><option value="excellent">Excellent — 18 Mbps</option><option value="ultra" selected>Ultra — 30 Mbps</option><option value="maximum">Maximum — 45 Mbps</option></select></div>
+ <div><label for="browserChat">Optional YouTube URL for chat hype graph</label><input id="browserChat" type="url" placeholder="https://www.youtube.com/watch?v=..."></div>
+ </div>
+ <div class="controls"><button id="browserStart" type="button">Record screen / tab in HD</button><button id="browserStop" class="secondary" type="button" disabled>Stop browser capture</button></div>
+ <div id="browserCaptureStatus" class="note">Desktop Chrome or Edge recommended. Choose the video tab and enable Share tab audio. Set YouTube playback to 1080p, 1440p or 4K before starting. The captured video can never be sharper than the selected tab.</div>
+ <div class="hint" style="margin-top:10px">The browser asks which tab or window to share. Screen sharing is required for this mode, and this tab must remain open while recording. A source resolution and frame-rate readout appears once sharing begins.</div>
+</section>
 <div class="grid"><section class="panel">
 <h2>1. Paste a livestream</h2><label for="url">Public livestream or authorized direct HLS URL</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=...">
 <div class="controls"><button id="inspect">Check stream support</button><button id="demo" type="button" class="secondary">▶ Test recording without YouTube</button><span class="hint">YouTube • Twitch • Kick • Direct HLS</span></div>
@@ -41,7 +51,7 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 </section><section class="panel"><h2>2. Clip settings</h2>
 <label for="before">Seconds before moment</label><select id="before"><option value="10">10 seconds</option><option value="20" selected>20 seconds</option><option value="30">30 seconds</option><option value="40">40 seconds</option></select>
 <label for="after">Seconds after moment</label><select id="after"><option value="10" selected>10 seconds</option><option value="20">20 seconds</option><option value="30">30 seconds</option></select>
-<label for="quality">Output quality</label><select id="quality"><option value="1080" selected>1080p • best available source detail</option><option value="720">720p</option><option value="480">480p</option></select>
+<label for="quality">Output quality</label><select id="quality"><option value="source" selected>Original capture resolution • maximum detail</option><option value="2160">4K / 2160p</option><option value="1440">1440p</option><option value="1080">1080p • best available source detail</option><option value="720">720p</option><option value="480">480p</option></select>
 <div class="note">Try the built-in test recording to verify the complete MP4 download flow without an external stream. Test jobs run for up to 10 minutes and can produce up to five clips. This temporary Render instance allows one active job at a time. Video clips are deleted on service restart.</div>
 </section></div>
 <section class="panel" id="jobPanel"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2>3. Your recording session</h2><span id="jobBadge" class="badge">Not started</span></div>
@@ -73,6 +83,49 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. Private beta only. YouTube and Twitch/Kick link capture are experimental; use with streams you own or are authorized to record. Compatibility is not guaranteed. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
 </main><script>
 const $=id=>document.getElementById(id);let jobId='',token='',activeURL='',statusTimer=null;
+let browserStream=null,browserRecorder=null,browserRecording=false,browserUploads=Promise.resolve(),browserSegmentTimer=null;
+function updateBrowserText(text){$('browserCaptureStatus').textContent=text}
+async function stopBrowserCapture({finish=true}={}){
+ browserRecording=false;
+ if(browserSegmentTimer){clearTimeout(browserSegmentTimer);browserSegmentTimer=null}
+ const recorder=browserRecorder;browserRecorder=null;
+ if(recorder&&recorder.state==='recording')recorder.stop();
+ // All completed segments must reach the server before finalizing.
+ if(browserStream){for(const track of browserStream.getTracks())track.stop();browserStream=null}
+ try{await browserUploads}catch(e){updateBrowserText('Upload failed: '+e.message)}
+ if(finish&&jobId&&token){try{await request('/api/v2/jobs/'+jobId+'/finish','POST',{})}catch(e){updateBrowserText('Finished locally; server: '+e.message)}}
+ $('browserStart').disabled=false;$('browserStop').disabled=true;
+ $('browserBadge').textContent='Stopped';
+ if(finish)updateBrowserText('Browser recording stopped. Completed MP4 clips stay downloadable until this beta session expires.');
+}
+function supportedCaptureMime(){
+ const options=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+ return options.find(type=>MediaRecorder.isTypeSupported(type))||'';
+}
+async function recordBrowserSegment(){
+ if(!browserRecording||!browserStream)return;
+ const type=supportedCaptureMime(),bits=Number($('browserPreset').value==='maximum'?45000000:$('browserPreset').value==='ultra'?30000000:18000000);
+ const opts={videoBitsPerSecond:bits,audioBitsPerSecond:192000};
+ if(type)opts.mimeType=type;
+ let recorder;try{recorder=new MediaRecorder(browserStream,opts)}catch(e){updateBrowserText('Cannot encode selected browser video: '+e.message);await stopBrowserCapture();return}
+ browserRecorder=recorder;const chunks=[];
+ recorder.ondataavailable=e=>{if(e.data?.size)chunks.push(e.data)};
+ recorder.onerror=e=>updateBrowserText('Browser encoder error: '+(e.error?.message||'Unknown error'));
+ recorder.onstop=()=>{
+  const segment=new Blob(chunks,{type:recorder.mimeType||'video/webm'});
+  if(segment.size>1000&&jobId&&token){
+   const id=jobId,sessionToken=token,settings=browserStream?.getVideoTracks()[0]?.getSettings()||{};
+   browserUploads=browserUploads.then(async()=>{
+    const res=await fetch('/api/v2/jobs/'+id+'/segments',{method:'POST',headers:{'X-HypeClip-Token':sessionToken,'Content-Type':'video/webm','X-Capture-Width':String(settings.width||0),'X-Capture-Height':String(settings.height||0),'X-Capture-Fps':String(settings.frameRate||0),'X-Capture-Audio':String(browserStream?.getAudioTracks().length>0)},body:segment});
+    if(!res.ok){let msg='HTTP '+res.status;try{const body=await res.json();msg=body.error||msg}catch{}throw Error(msg)}
+   }).catch(e=>{updateBrowserText('Segment upload problem: '+e.message);browserRecording=false;if(browserStream){browserStream.getTracks().forEach(t=>t.stop())}});
+  }
+  if(browserRecording&&browserStream?.getVideoTracks().some(t=>t.readyState==='live'))recordBrowserSegment();
+ };
+ try{recorder.start();browserSegmentTimer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop()},2200)}
+ catch(e){updateBrowserText('Recording could not start: '+e.message);await stopBrowserCapture()}
+}
+
 function clearSession(reason=''){
  if(statusTimer){clearInterval(statusTimer);statusTimer=null}
  sessionStorage.removeItem('hypeclip-v2-session');
@@ -84,7 +137,36 @@ function clearSession(reason=''){
  if(reason)$('jobStatus').textContent=reason;
 }
 function isSessionError(e){return e&&[401,403,404,410].includes(e.status)}
+$('browserStart').onclick=async()=>{
+ if(jobId){updateBrowserText('Stop or finish the previous session before starting another capture.');return}
+ if(!navigator.mediaDevices?.getDisplayMedia||!window.MediaRecorder){updateBrowserText('This browser cannot capture tabs. Use current desktop Chrome or Edge over HTTPS.');return}
+ $('browserStart').disabled=true;
+ try{
+  const stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:60},width:{ideal:3840},height:{ideal:2160}},audio:true,preferCurrentTab:false,selfBrowserSurface:'exclude',surfaceSwitching:'include',systemAudio:'include'});
+  browserStream=stream;
+  const video=stream.getVideoTracks()[0],settings=video.getSettings();
+  if(!video)throw Error('No video track selected');
+  const data=await request('/api/v2/jobs','POST',{url:'browser://capture',confirmedRights:true,chatUrl:$('browserChat').value.trim()||$('url').value.trim()||undefined});
+  jobId=data.job.id;token=data.token;
+  sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:'',mode:'browser'}));
+  browserRecording=true;
+  video.addEventListener('ended',()=>{if(browserRecording)void stopBrowserCapture()},{once:true});
+  $('browserStop').disabled=false;$('browserBadge').textContent='● Recording';
+  const label=(settings.width||'?')+' × '+(settings.height||'?')+' • '+Math.round(settings.frameRate||0)+' fps';
+  updateBrowserText('Capturing '+label+(stream.getAudioTracks().length?' with shared audio.':' WITHOUT audio. Choose Share tab audio when selecting a tab.')+' Browser tab must remain open. Quality is limited by the source playback.');
+  recordBrowserSegment();
+  if(statusTimer)clearInterval(statusTimer);statusTimer=setInterval(poll,3000);
+  await poll();
+ }catch(e){
+  if(browserStream){browserStream.getTracks().forEach(t=>t.stop());browserStream=null}
+  $('browserStart').disabled=false;
+  updateBrowserText('Capture not started: '+e.message);
+ }
+};
+$('browserStop').onclick=async()=>{await stopBrowserCapture();await poll()};
+
 async function endSessionForSwitch(){
+ if(browserRecording)await stopBrowserCapture({finish:false});
  if(jobId&&token){
   try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{})}
   catch(e){if(!isSessionError(e))throw e}
@@ -112,6 +194,7 @@ $('newSource').onclick=async()=>{
  finally{$('newSource').disabled=false}
 };
 $('resetJob').onclick=async()=>{
+ if(browserRecording)await stopBrowserCapture({finish:false});
  if(jobId&&token){
   const proceed=confirm('Start a fresh recording session? Stop the current job and release its slot. Download any finished clips first; this will clear their links from this page.');
   if(!proceed)return;
@@ -232,6 +315,7 @@ async function poll(){if(!jobId||!token)return false;try{
  const j=await request('/api/v2/jobs/'+currentId);
  if(currentId!==jobId)return false;
  $('jobState').textContent=j.status;$('segments').textContent=j.segments;$('elapsed').textContent=j.elapsedSeconds+'s';
+ if(j.provider==='Browser tab capture'&&j.captureDetails?.width){$('browserBadge').textContent=(j.captureDetails.width+'×'+j.captureDetails.height)+' captured';}
  $('jobBadge').textContent=j.recordingHealth==='buffering'?'● Video buffering':j.recordingHealth==='waiting-for-video'?'● Waiting for video':j.status==='recording'?'● Starting':'● '+j.status;
  plotHype(j.hypeHistory,j.chat);
  $('captureBlocked').classList.toggle('hidden',j.status!=='chat-only'&&j.status!=='failed');
@@ -261,6 +345,7 @@ $('clip').onclick=async()=>{
  }finally{$('clip').disabled=true}
 };
 $('stop').onclick=async()=>{
+ if(browserRecording){await stopBrowserCapture();await poll();return}
  try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});$('jobStatus').textContent='Recording stopped. Generated clips remain downloadable until the session expires or server restarts.';$('clip').disabled=true;$('stop').disabled=true;if(statusTimer){clearInterval(statusTimer);statusTimer=null}await poll()}
  catch(e){if(isSessionError(e))clearSession('Previous recording session expired. You can start a new recording.');else $('jobStatus').textContent=e.message}
 };

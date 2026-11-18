@@ -231,7 +231,9 @@ async function monitorChat(job,url){
   const chatId=liveDetails?.activeLiveChatId;
   if(!chatId)throw Error('Live chat is disabled or stream is not currently live.');
   job.chat.status='monitoring';
-  while(!job.chatStop&&(job.status==='recording'||job.status==='chat-only')){
+  // Browser capture may spend several seconds in permission-selection/upload startup.
+  // Keep chat monitoring ready while waiting for its first segment.
+  while(!job.chatStop&&['starting','recording','chat-only'].includes(job.status)){
    let pause=5000;
    try{
     const results=await youtubeAPI('liveChat/messages',{part:'id,snippet,authorDetails',liveChatId:chatId,maxResults:200,...(page?{pageToken:page}:{})});

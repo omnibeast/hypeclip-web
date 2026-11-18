@@ -44,7 +44,7 @@ if(s.error)$('error').textContent=s.error;
 const hist=(s.history||[]).slice(-80);
 $('chart').innerHTML=hist.length?hist.map(x=>'<div class="bar" title="'+x.messages+' messages / 10s" style="height:'+Math.max(2,Math.round(x.messages/Math.max(20,...hist.map(v=>v.messages))*100))+'%"></div>').join(''):'<span class="empty">Waiting for chat activity...</span>';
 $('feed').innerHTML=(s.messages||[]).length?s.messages.map(m=>'<div class="feeditem"><span class="time">'+fmt(m.at)+'</span><b>'+esc(m.author)+'</b>'+esc(m.text)+'</div>').join(''):'<span class="empty">No messages yet.</span>';
-$('events').innerHTML=(s.events||[]).length?s.events.map(e=>'<div class="event"><strong>🔥 HYPE '+e.score+'/100</strong><span class="time">'+fmt(e.at)+'</span><div style="margin:7px 0">'+e.count+' messages / 10 sec • '+e.unique+' chatters</div><small>'+(e.clipUrl?'<a href="'+encodeURI(e.clipUrl)+'" download style="color:#60ead4;text-decoration:underline">⬇ Download MP4</a>':esc(e.clip))+'</small></div>').join(''):'<span class="empty">No hype moments detected yet.</span>';
+$('events').innerHTML=(s.events||[]).length?s.events.map(e=>'<div class="event"><strong>🔥 HYPE '+e.score+'/100</strong><span class="time">'+fmt(e.at)+'</span><div style="margin:7px 0">'+e.count+' messages / 10 sec • '+e.unique+' chatters</div><small>'+(e.clipUrl?'<button class="clip-download secondary" type="button" data-clip="'+encodeURIComponent(e.clipUrl)+'" style="padding:7px 10px;margin-top:5px">⬇ Download MP4</button>':esc(e.clip))+'</small></div>').join(''):'<span class="empty">No hype moments detected yet.</span>';
 }
 
 const settingsKeys=['autoBefore','autoAfter','manualBefore','manualAfter'];
@@ -115,6 +115,35 @@ $('capture').onclick=async()=>{
 };
 $('capturestop').onclick=()=>stopCapture();
 $('manualclip').onclick=async()=>{try{await api('/api/clip');captureMessage('Test clip queued; look in Hype moments in approximately 15 seconds.')}catch(e){captureMessage(e.message)}};
+
+
+let downloadingClip=false;
+$('events').addEventListener('click',async event=>{
+ const button=event.target.closest('button.clip-download');
+ if(!button||downloadingClip)return;
+ const original=button.textContent;
+ downloadingClip=true;button.disabled=true;button.textContent='Downloading...';
+ try{
+  const url=decodeURIComponent(button.dataset.clip||'');
+  if(!/^\/api\/clips\/[a-zA-Z0-9_-]+\.mp4$/.test(url))throw Error('Invalid clip download URL');
+  const response=await fetch(url,{cache:'no-store'});
+  if(!response.ok){
+   let message='Download failed (HTTP '+response.status+')';
+   try{const data=await response.json();if(data.error)message=data.error}catch{}
+   throw Error(message);
+  }
+  const blob=await response.blob();
+  if(blob.size<1000)throw Error('MP4 file is incomplete or empty.');
+  const filename='hypeclip-'+new Date().toISOString().replace(/[:.]/g,'-')+'.mp4';
+  const objectURL=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=objectURL;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(objectURL),60000);
+  $('capturestatus').textContent='Download started: '+filename+' ('+(blob.size/1048576).toFixed(1)+' MB). Check your browser Downloads folder.';
+ }catch(err){
+  $('capturestatus').textContent='MP4 download error: '+err.message;
+  $('error').textContent='MP4 download error: '+err.message;
+ }finally{button.disabled=false;button.textContent=original;downloadingClip=false}
+});
 
 const stream=new EventSource('/api/events');stream.onmessage=e=>{try{render(JSON.parse(e.data))}catch{}};
 stream.onerror=()=>{$('error').textContent='Live dashboard disconnected. Retrying...'};

@@ -41,12 +41,14 @@ async function v2Route(req,res,path){
   v2Limit(req);
   if(path==='/api/v2/inspect'&&req.method==='POST')return json(res,v2.inspect((await v2Body(req)).url));
   if(path==='/api/v2/jobs'&&req.method==='POST')return json(res,await v2.start(await v2Body(req),req),201);
-  const parts=/^\/api\/v2\/jobs\/([a-f0-9-]{36})(?:\/(stop|clips|mark)(?:\/([a-f0-9-]{36})\.(mp4|csv|json))?)?$/.exec(path);
+  const parts=/^\/api\/v2\/jobs\/([a-f0-9-]{36})(?:\/(stop|clips|mark|segments|finish)(?:\/([a-f0-9-]{36})\.(mp4|csv|json))?)?$/.exec(path);
   if(!parts)return json(res,{error:'Not found'},404);
   const [,id,action,fileId,format]=parts,token=v2.tokenFromRequest(req);
   if(!action&&req.method==='GET')return json(res,v2.status(id,token));
   if(action==='stop'&&req.method==='POST')return json(res,v2.stop(id,token));
   if(action==='mark'&&req.method==='POST')return json(res,v2.markMoment(id,token),201);
+  if(action==='segments'&&req.method==='POST')return json(res,await v2.ingestBrowserSegment(id,token,req),201);
+  if(action==='finish'&&req.method==='POST')return json(res,v2.finishBrowserRecording(id,token));
   if(action==='clips'&&!fileId&&req.method==='POST')return json(res,await v2.createClip(id,token,await v2Body(req)),202);
   if(action==='clips'&&fileId&&req.method==='GET'){
     const out=v2.download(id,token,fileId,format);

@@ -20,6 +20,8 @@ button.secondary{background:#263d52;color:#e0edfa}button:disabled{opacity:.5;cur
 a{color:#53e6d0;text-decoration:none}a:hover{text-decoration:underline}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:13px}
 .hidden{display:none!important}.badge{font-size:11px;color:#50e5cd;background:#143d3a;border-radius:10px;padding:5px 8px}
 .bad{color:#ffa1a7}.good{color:#5df7ce}
+.chartTop{display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}.chartStats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:17px 0 13px}.chartStats>div{border:1px solid #26465b;background:#13283a;border-radius:10px;padding:11px}.chartStats strong{display:block;font-size:24px;margin-top:7px;font-variant-numeric:tabular-nums}.graphWrap{width:100%;background:linear-gradient(180deg,#0a1929,#0c1422);border:1px solid #244154;border-radius:12px;padding:7px;overflow:hidden}.graphWrap svg{display:block;width:100%;height:230px}.chartLegend{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin:12px 0;color:#b3cade;font-size:12px}.chartLegend span:last-child{margin-left:auto}.legendDot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#37dfc5;margin-right:5px}.legendDash{display:inline-block;width:15px;border-top:2px dashed #f4c97f;margin:0 5px 3px 0}.graphLabel{fill:#8199b0;font:12px system-ui}.graphGridLine{stroke:#254056;stroke-width:1;stroke-dasharray:3 5}
+@media(max-width:520px){.chartStats{grid-template-columns:repeat(2,minmax(0,1fr))}.graphWrap svg{height:170px}}
 footer{margin-top:28px;font-size:12px;color:#879aad}
 @media(max-width:750px){.grid{grid-template-columns:1fr}.slots{grid-template-columns:1fr 1fr}.hero{padding:28px 0 20px}header{padding:15px 18px}}
 </style></head><body><header><div class="brand">Hype<span>Clip</span> <small style="font-size:11px;color:#92b1c8">V2 BETA</small></div><span class="pill">URL → Highlights</span></header>
@@ -47,6 +49,13 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="stop" class="secondary" disabled>Stop recording</button></div>
 <div id="jobStatus" role="status">Start recording a livestream you own or have permission to record. For YouTube Live, chat spikes can also trigger automatic clips.</div>
 </section>
+<section class="panel" id="hypePanel">
+<div class="chartTop"><div><h2>Live chat hype</h2><div class="hint">Rolling activity • messages per 10 seconds</div></div><span id="hypeSource" class="badge">Awaiting chat</span></div>
+<div class="chartStats"><div><span class="muted">Current</span><strong id="hypeCurrent">—</strong></div><div><span class="muted">Peak</span><strong id="hypePeak">—</strong></div><div><span class="muted">Baseline</span><strong id="hypeBaseline">—</strong></div><div><span class="muted">Samples</span><strong id="hypeSamples">0</strong></div></div>
+<div class="graphWrap"><svg id="hypeGraph" viewBox="0 0 800 230" preserveAspectRatio="none" role="img" aria-label="Live chat rate line chart"><defs><linearGradient id="hypeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#37dfc5" stop-opacity=".34"/><stop offset="1" stop-color="#37dfc5" stop-opacity="0"/></linearGradient></defs><g id="hypeGrid"></g><path id="hypeArea" fill="url(#hypeFill)" d=""></path><path id="hypeLine" fill="none" stroke="#44ead0" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" d=""></path><path id="hypeBase" fill="none" stroke="#f4c97f" stroke-width="1.8" stroke-dasharray="6 5" d=""></path><g id="hypeMarkers"></g></svg></div>
+<div class="chartLegend"><span><i class="legendDot"></i> Chat activity</span><span><i class="legendDash"></i> Baseline</span><span id="hypeWindow">Last 3 min</span></div>
+<div id="hypeMessage" class="hint">Start a YouTube Live session to see live chat analytics. The built-in test uses simulated chat activity, clearly marked as demo.</div>
+</section>
 <section class="panel"><h2>4. Your clips and time logs</h2><div id="clips"><p class="hint">Completed clips appear here with MP4, CSV timestamp log and JSON metadata downloads.</p></div></section>
 <footer>HypeClip V2 preview • No screen sharing is needed for approved direct HLS sources. Private beta only. YouTube and Twitch/Kick link capture are experimental; use with streams you own or are authorized to record. Compatibility is not guaranteed. For existing YouTube hype monitoring, use the <a href="/">original dashboard</a>.</footer>
 </main><script>
@@ -56,7 +65,7 @@ function clearSession(reason=''){
  sessionStorage.removeItem('hypeclip-v2-session');
  jobId='';token='';
  $('clip').disabled=true;$('stop').disabled=true;
- $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';
+ $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';plotHype([]);
  if(reason)$('jobStatus').textContent=reason;
 }
 function isSessionError(e){return e&&[401,403,404,410].includes(e.status)}
@@ -121,14 +130,40 @@ function renderClips(clips){
  return '<div class="slot" style="margin-bottom:11px"><div><b>Clip '+esc(c.id.slice(0,8))+'</b> <span class="badge">'+esc(c.state)+'</span></div><div class="muted" style="margin-top:7px">'+esc(c.metadata?.triggerUTC||fmt(c.createdAt))+(c.error?' • '+esc(c.error):'')+'</div>'+links+'</div>';
  }).join(''):'<p class="hint">No clips yet. Buffer some footage, then save a highlight.</p>';
 }
+function plotHype(samples,chat={}){
+ const data=(Array.isArray(samples)?samples:[]).filter(v=>Number.isFinite(v.at)&&Number.isFinite(v.rate)).slice(-90);
+ const source=data.length?data[data.length-1].source:'none';
+ $('hypeSource').textContent=source==='demo'?'Simulated test':source==='youtube-chat'?'YouTube live chat':chat.status==='unavailable'?'Chat unavailable':'Awaiting chat';
+ $('hypeMessage').textContent=source==='demo'?'Simulated chat spikes for testing graph rendering. These are not real YouTube messages.':source==='youtube-chat'?'Real YouTube live chat metrics; recording availability is independent of chat monitoring.':chat.error||'No chat samples yet. YouTube live chat may be disabled, restricted, or not connected.';
+ $('hypeCurrent').textContent=data.length?data[data.length-1].rate:'—';
+ $('hypePeak').textContent=data.length?Math.max(...data.map(v=>v.rate)):'—';
+ $('hypeBaseline').textContent=data.length?(data[data.length-1].baseline||0).toFixed(1):'—';
+ $('hypeSamples').textContent=String(data.length);
+ $('hypeWindow').textContent=data.length>1?'Last '+Math.max(1,Math.round((data[data.length-1].at-data[0].at)/60000))+' min':'Last 3 min';
+ const grid=$('hypeGrid'),line=$('hypeLine'),area=$('hypeArea'),base=$('hypeBase'),markers=$('hypeMarkers');
+ const W=800,H=230,L=39,R=14,T=12,B=27,w=W-L-R,h=H-T-B;
+ const max=Math.max(10,...data.map(v=>Math.max(v.rate,v.baseline||0)));const top=Math.ceil(max/5)*5;
+ grid.innerHTML='';
+ for(let i=0;i<=4;i++){const y=T+i*h/4,number=Math.round(top*(1-i/4));grid.insertAdjacentHTML('beforeend','<line class="graphGridLine" x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'"/><text class="graphLabel" x="3" y="'+(y+4)+'">'+number+'</text>')}
+ if(!data.length){line.setAttribute('d','');area.setAttribute('d','');base.setAttribute('d','');markers.innerHTML='';return}
+ const first=data[0].at,last=data[data.length-1].at,span=Math.max(1000,last-first);
+ const x=v=>L+(v.at-first)/span*w,y=n=>T+(1-n/top)*h;
+ const path=data.map((v,i)=>(i?'L':'M')+x(v).toFixed(1)+' '+y(v.rate).toFixed(1)).join(' ');
+ const baseline=data.map((v,i)=>(i?'L':'M')+x(v).toFixed(1)+' '+y(v.baseline||0).toFixed(1)).join(' ');
+ line.setAttribute('d',path);base.setAttribute('d',baseline);
+ area.setAttribute('d',path+' L'+x(data[data.length-1]).toFixed(1)+' '+(T+h)+' L'+x(data[0]).toFixed(1)+' '+(T+h)+' Z');
+ markers.innerHTML=data.filter(v=>v.rate>=12&&v.rate>=Math.max(1,v.baseline||0)*2.4).slice(-14).map(v=>'<circle cx="'+x(v).toFixed(1)+'" cy="'+y(v.rate).toFixed(1)+'" r="4" fill="#f4c97f" stroke="#0c1422" stroke-width="2"><title>Hype spike: '+v.rate+' messages</title></circle>').join('');
+}
+
 async function poll(){if(!jobId||!token)return false;try{
  const currentId=jobId;
  const j=await request('/api/v2/jobs/'+currentId);
  if(currentId!==jobId)return false;
  $('jobState').textContent=j.status;$('segments').textContent=j.segments;$('elapsed').textContent=j.elapsedSeconds+'s';
- $('jobBadge').textContent=j.status==='recording'?'● Recording':'● '+j.status;
- $('jobStatus').textContent=j.error?'Recorder: '+j.error:(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
- $('clip').disabled=j.status!=='recording';$('stop').disabled=j.status!=='recording';
+ $('jobBadge').textContent=j.recordingHealth==='buffering'?'● Video buffering':j.recordingHealth==='waiting-for-video'?'● Waiting for video':j.status==='recording'?'● Starting':'● '+j.status;
+ plotHype(j.hypeHistory,j.chat);
+ $('jobStatus').textContent=j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
+ $('clip').disabled=j.status!=='recording'||j.segments<2;$('stop').disabled=j.status!=='recording';
  renderClips(j.clips);
  if(j.status!=='recording'&&j.status!=='starting'&&statusTimer){clearInterval(statusTimer);statusTimer=null}
  return true;
@@ -150,7 +185,7 @@ $('clip').onclick=async()=>{
  }catch(e){
    if(isSessionError(e)){clearSession('Session expired. Start another recording to create clips.');return}
    $('jobStatus').textContent=e.message;
- }finally{$('clip').disabled=!jobId}
+ }finally{$('clip').disabled=true}
 };
 $('stop').onclick=async()=>{
  try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{});$('jobStatus').textContent='Recording stopped. Generated clips remain downloadable until the session expires or server restarts.';$('clip').disabled=true;$('stop').disabled=true;if(statusTimer){clearInterval(statusTimer);statusTimer=null}await poll()}

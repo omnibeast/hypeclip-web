@@ -113,7 +113,7 @@ export async function start({url,confirmedRights,captureHlsUrl,chatUrl},req){
  const validated=isBrowser?BROWSER_SOURCE:isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  let browserChatUrl=null;
- if(isBrowser&&chatUrl){const ch=provider(String(chatUrl));if(ch.provider!=='YouTube')throw error('Optional chat link must be a YouTube video or live URL.',422);browserChatUrl=new URL(String(chatUrl)).toString()}
+ if(isBrowser&&chatUrl){const ch=provider(String(chatUrl));if(ch.provider!=='YouTube'||!/^[a-zA-Z0-9_-]{11}$/.test(videoId(String(chatUrl))||''))throw error('Optional chat link must be a valid YouTube livestream URL.',422);browserChatUrl=new URL(String(chatUrl)).toString()}
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
  const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:isBrowser?browserChatUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],markers:[],streamStartedAt:null,chatStop:false};jobs.set(id,job);
  let extractor=null;
@@ -305,7 +305,16 @@ export async function ingestBrowserSegment(id,token,req){
  fs.writeFileSync(output,Buffer.concat(chunks));
  job.status='recording';job.error='';
  job.captureDetails={width:Number(req.headers['x-capture-width']||0),height:Number(req.headers['x-capture-height']||0),frameRate:Number(req.headers['x-capture-fps']||0),audio:req.headers['x-capture-audio']==='true'};
- const parts=scan(job);for(const part of parts.slice(0,Math.max(0,parts.length-MAX_SEGMENTS))){try{fs.unlinkSync(part.file)}catch{}}
+ // Keep a rolling recording buffer rather than filling Render's ephemeral disk.
+ // Never delete video files while a clip is encoding from them.
+ let parts=scan(job);
+ if(!job.clips.some(c=>c.state==='encoding')){
+  let total=parts.reduce((sum,p)=>sum+p.size,0);
+  while(parts.length>70||total>400*1024*1024){
+   const oldest=parts.shift();if(!oldest)break;
+   total-=oldest.size;try{fs.unlinkSync(oldest.file)}catch{}
+  }
+ }
  return {ok:true,segments:parts.length,bytes:length};
 }
 export function finishBrowserRecording(id,token){

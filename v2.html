@@ -48,6 +48,15 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <div class="slots"><div class="slot"><div class="muted">Status</div><div id="jobState" class="num" style="font-size:17px">Idle</div></div><div class="slot"><div class="muted">Buffered segments</div><div id="segments" class="num">0</div></div><div class="slot"><div class="muted">Elapsed</div><div id="elapsed" class="num">0s</div></div></div>
 <div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="stop" class="secondary" disabled>Stop recording</button><button id="resetJob" class="secondary" type="button">Start fresh session</button></div>
 <div id="jobStatus" role="status">Start recording a livestream you own or have permission to record. For YouTube Live, chat spikes can also trigger automatic clips.</div>
+<div id="captureBlocked" class="hidden" style="margin-top:14px;padding:14px;border:1px solid #6a4750;border-radius:12px;background:#301c2b">
+ <strong>Video capture unavailable</strong>
+ <p class="hint" style="margin:8px 0 12px">YouTube chat is available, but this server cannot currently retrieve video. The clip button is disabled because there is no footage to clip. This is not a gray-button UI bug.</p>
+ <div class="controls">
+  <button id="switchDemo" class="secondary" type="button">Switch to working video test</button>
+  <button id="newSource" class="secondary" type="button">Try another video source</button>
+ </div>
+ <p class="hint" style="margin-top:10px">The test uses generated footage, not the YouTube stream. For real video, use a source the recorder can access.</p>
+</div>
 </section>
 <section class="panel" id="hypePanel">
 <div class="chartTop"><div><h2>Live chat hype</h2><div class="hint">Rolling activity • messages per 10 seconds</div></div><span id="hypeSource" class="badge">Awaiting chat</span></div>
@@ -64,12 +73,39 @@ function clearSession(reason=''){
  if(statusTimer){clearInterval(statusTimer);statusTimer=null}
  sessionStorage.removeItem('hypeclip-v2-session');
  jobId='';token='';
- $('clip').disabled=true;$('stop').disabled=true;
+ $('clip').disabled=true;$('stop').disabled=true;$('captureBlocked').classList.add('hidden');
  $('clips').innerHTML='<p class="hint">Clips from the previous session are no longer shown. Start a new recording to create more.</p>';
  $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';plotHype([]);
  if(reason)$('jobStatus').textContent=reason;
 }
 function isSessionError(e){return e&&[401,403,404,410].includes(e.status)}
+async function endSessionForSwitch(){
+ if(jobId&&token){
+  try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{})}
+  catch(e){if(!isSessionError(e))throw e}
+ }
+ clearSession('');
+}
+$('switchDemo').onclick=async()=>{
+ $('switchDemo').disabled=true;
+ try{
+  await endSessionForSwitch();
+  $('captureBlocked').classList.add('hidden');
+  await $('demo').onclick();
+ }catch(e){$('jobStatus').textContent='Could not switch recordings: '+e.message}
+ finally{$('switchDemo').disabled=false}
+};
+$('newSource').onclick=async()=>{
+ $('newSource').disabled=true;
+ try{
+  await endSessionForSwitch();
+  $('captureBlocked').classList.add('hidden');
+  $('recordOptions').classList.add('hidden');
+  message('Enter or check a new accessible video URL. The YouTube chat link alone cannot provide MP4 footage if its playback feed is blocked.');
+  $('url').focus();
+ }catch(e){$('jobStatus').textContent='Could not end previous session: '+e.message}
+ finally{$('newSource').disabled=false}
+};
 $('resetJob').onclick=async()=>{
  if(jobId&&token){
   const proceed=confirm('Start a fresh recording session? Stop the current job and release its slot. Download any finished clips first; this will clear their links from this page.');
@@ -173,7 +209,8 @@ async function poll(){if(!jobId||!token)return false;try{
  $('jobState').textContent=j.status;$('segments').textContent=j.segments;$('elapsed').textContent=j.elapsedSeconds+'s';
  $('jobBadge').textContent=j.recordingHealth==='buffering'?'● Video buffering':j.recordingHealth==='waiting-for-video'?'● Waiting for video':j.status==='recording'?'● Starting':'● '+j.status;
  plotHype(j.hypeHistory,j.chat);
- $('jobStatus').textContent=j.status==='chat-only'?'Video capture blocked: '+(j.error||'source unavailable')+' Chat monitoring remains active where supported; MP4 clipping needs video footage.':j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
+ $('captureBlocked').classList.toggle('hidden',j.status!=='chat-only'&&j.status!=='failed');
+ $('jobStatus').textContent=j.status==='chat-only'?'Chat monitoring is active, but NO VIDEO was captured. MP4 clipping is unavailable. '+(j.error||'Video source is blocked'):j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
  $('clip').disabled=j.status!=='recording'||j.segments<2;$('stop').disabled=!['recording','chat-only','starting'].includes(j.status);
  renderClips(j.clips);
  if(!['recording','starting','chat-only'].includes(j.status)&&statusTimer){clearInterval(statusTimer);statusTimer=null}

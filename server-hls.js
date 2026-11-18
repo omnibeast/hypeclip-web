@@ -28,6 +28,33 @@ async function validate(urlString){
  if(!records.length||records.some(x=>privateIp(x.address)))throw Error('The HLS server resolves to a restricted network address.');
  return u;
 }
+async function bestHlsUrl(url){
+ // Choose the highest advertised variant from a standard HLS master playlist.
+ // Media playlists (already a variant) are used unchanged.
+ let body;
+ try{
+  const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(8000),headers:{accept:'application/vnd.apple.mpegurl,application/x-mpegURL,text/plain'}});
+  if(!response.ok)throw Error('HLS playlist returned '+response.status);
+  const contentLength=Number(response.headers.get('content-length')||0);
+  if(contentLength>1024*1024)throw Error('HLS playlist is too large');
+  body=await response.text();
+  if(body.length>1024*1024||!body.trimStart().startsWith('#EXTM3U'))throw Error('Invalid HLS playlist');
+ }catch(e){throw Error('Could not read the authorized HLS playlist: '+e.message)}
+ const lines=body.split(/\r?\n/).map(s=>s.trim()),variants=[];
+ for(let i=0;i<lines.length-1;i++){
+  if(!lines[i].startsWith('#EXT-X-STREAM-INF:'))continue;
+  let j=i+1;while(j<lines.length&&(!lines[j]||lines[j].startsWith('#')))j++;
+  if(j>=lines.length)continue;
+  const data=lines[i],resolution=/RESOLUTION=(\d+)x(\d+)/i.exec(data),bandwidth=/BANDWIDTH=(\d+)/i.exec(data);
+  const candidate=new URL(lines[j],url);
+  try{await validate(candidate.href)}catch{continue}
+  variants.push({url:candidate,score:(resolution?Number(resolution[1])*Number(resolution[2]):0)*100000000+(bandwidth?Number(bandwidth[1]):0)});
+ }
+ if(!variants.length)return url;
+ variants.sort((a,b)=>b.score-a.score);
+ return variants[0].url;
+}
+
 function scan(){
  if(!directory)return;
  try{
@@ -46,7 +73,8 @@ export function stopServerCapture(){
  startedAt=null;sourceHost='';files=[];lastError='';
 }
 export async function startServerCapture(url){
- const u=await validate(url);
+ const authorized=await validate(url);
+ const u=await bestHlsUrl(authorized);
  stopServerCapture();closing=false;
  directory=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-hls-'));
  sourceHost=u.hostname;startedAt=Date.now();

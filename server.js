@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import {ingest,makeClip,getClip,getClipLog,snapshot,stopRecording} from './recorder.js';
 import {startServerCapture,stopServerCapture,serverCaptureStatus} from './server-hls.js';
+import * as v2 from './v2-jobs.js';
 const PORT=Number(process.env.PORT||4173),PASSWORD=process.env.HYPECLIP_PASSWORD||'',KEY=process.env.YOUTUBE_API_KEY||'';
 if(process.env.NODE_ENV==='production'&&!PASSWORD)throw Error('Set HYPECLIP_PASSWORD');
 const clients=new Set();let interval=null,session=0;
@@ -31,7 +32,31 @@ async function youtube(endpoint,params){const u=new URL('https://www.googleapis.
 async function startReal(opts){if(!KEY)throw Error('YouTube API key is not configured. Try demo mode.');const id=youtubeId(opts.url);if(!/^[\w-]{11}$/.test(id||''))throw Error('Invalid YouTube video ID');const info=await youtube('videos',{part:'snippet,liveStreamingDetails',id}),video=info.items?.[0];if(!video?.liveStreamingDetails?.activeLiveChatId)throw Error('Video is not live with publicly accessible chat');stop();const token=session;Object.assign(state,{status:'monitoring',mode:'youtube',title:video.snippet?.title||'YouTube livestream',url:opts.url,count:0,rate:0,peak:0,baseline:0,messages:[],events:[],history:[],error:'',startedAt:Date.now(),lastEvent:0,sensitivity:opts.sensitivity||'balanced'});const chatId=video.liveStreamingDetails.activeLiveChatId;let pageToken='',seen=new Set();interval=setInterval(()=>{if(token===session)analyze()},2000);send();(async()=>{while(token===session){let delay=5000;try{const params={part:'id,snippet,authorDetails',liveChatId:chatId,maxResults:200,...(pageToken?{pageToken}:{})},data=await youtube('liveChat/messages',params);pageToken=data.nextPageToken||pageToken;for(const m of data.items||[]){if(seen.has(m.id))continue;seen.add(m.id);if(seen.size>20000)seen.clear();add(m.snippet?.displayMessage||'',m.authorDetails?.displayName||'Viewer',Date.parse(m.snippet?.publishedAt)||Date.now())}delay=Math.max(1500,Number(data.pollingIntervalMillis||5000));state.error='';send()}catch(e){state.error=e.message;delay=15000;send()}await new Promise(r=>setTimeout(r,delay))}})()}
 function authorized(req){if(!PASSWORD)return true;const h=req.headers.authorization||'';if(!h.startsWith('Basic '))return false;let raw='';try{raw=Buffer.from(h.slice(6),'base64').toString()}catch{return false}const i=raw.indexOf(':');if(i<0)return false;const a=Buffer.from(raw.slice(i+1)),b=Buffer.from(PASSWORD);return a.length===b.length&&crypto.timingSafeEqual(a,b)}
 const html=fs.readFileSync(new URL('./index.html',import.meta.url));
-http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());
+const v2html=fs.readFileSync(new URL('./v2.html',import.meta.url));
+const v2Rate=new Map();
+function v2Limit(req){const ip=String(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();const now=Date.now(),v=v2Rate.get(ip)||{at:now,count:0};if(now-v.at>60000){v.at=now;v.count=0}v.count++;v2Rate.set(ip,v);if(v.count>90)throw {error:'Too many requests. Please retry later.',status:429};if(v2Rate.size>5000){for(const [k,val] of v2Rate){if(now-val.at>60000)v2Rate.delete(k)}}}
+async function v2Body(req){let body='';for await(const b of req){body+=b;if(body.length>4096)throw {error:'Request too large',status:413}}try{return JSON.parse(body||'{}')}catch{throw {error:'Invalid JSON request',status:400}}}
+async function v2Route(req,res,path){
+ try{
+  v2Limit(req);
+  if(path==='/api/v2/inspect'&&req.method==='POST')return json(res,v2.inspect((await v2Body(req)).url));
+  if(path==='/api/v2/jobs'&&req.method==='POST')return json(res,await v2.start(await v2Body(req),req),201);
+  const parts=/^\/api\/v2\/jobs\/([a-f0-9-]{36})(?:\/(stop|clips)(?:\/([a-f0-9-]{36})\.(mp4|csv|json))?)?$/.exec(path);
+  if(!parts)return json(res,{error:'Not found'},404);
+  const [,id,action,fileId,format]=parts,token=v2.tokenFromRequest(req);
+  if(!action&&req.method==='GET')return json(res,v2.status(id,token));
+  if(action==='stop'&&req.method==='POST')return json(res,v2.stop(id,token));
+  if(action==='clips'&&!fileId&&req.method==='POST')return json(res,await v2.createClip(id,token,await v2Body(req)),202);
+  if(action==='clips'&&fileId&&req.method==='GET'){
+    const out=v2.download(id,token,fileId,format);
+    res.writeHead(200,{'content-type':out.type,'content-length':out.bytes,'content-disposition':'attachment; filename="'+out.name+'"','cache-control':'no-store','x-content-type-options':'nosniff'});
+    return fs.createReadStream(out.file).pipe(res);
+  }
+  return json(res,{error:'Unsupported operation'},405);
+ }catch(e){return json(res,{error:e.error||e.message||'Request failed'},e.status||400)}
+}
+
+http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if(path==='/v2'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});return res.end(v2html)}if(path.startsWith('/api/v2/'))return v2Route(req,res,path);if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());
 if(path==='/api/server-capture/start'&&req.method==='POST'){
  let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>8192)throw Error('Video source URL too long')}
  const opts=JSON.parse(raw||'{}');

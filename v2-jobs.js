@@ -69,11 +69,36 @@ function readJob(id,token){
  return job;
 }
 function securityToken(req){return String(req.headers['x-hypeclip-token']||'')}
+function releaseRecorder(job,reason){
+ if(job.status!=='recording'&&job.status!=='starting')return;
+ job.status='failed';job.error=reason;job.chatStop=true;
+ if(job.hypeTimer)clearInterval(job.hypeTimer);
+ if(job.timer)clearInterval(job.timer);job.timer=null;
+ if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}
+ if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}
+}
+function reclaimStaleJobs(){
+ const now=Date.now();
+ for(const job of jobs.values()){
+  if(job.status!=='recording'&&job.status!=='starting')continue;
+  const segments=scan(job),latest=segments.at(-1);
+  if(now>=job.expiresAt){
+   job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);
+   if(job.timer)clearInterval(job.timer);job.timer=null;
+   if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}
+   if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}
+   job.status='finished';continue;
+  }
+  if(now-job.createdAt>45000&&!segments.length){releaseRecorder(job,'Recording stalled: no video segments were produced. Session slot released.');continue}
+  if(latest&&now-latest.at>45000){releaseRecorder(job,'Recording stalled: no new video arrived for 45 seconds. Session slot released.')}
+ }
+}
 export async function start({url,confirmedRights,captureHlsUrl},req){
  if(!confirmedRights)throw error('Confirm you own or have permission to record this video source.');
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
- const active=[...jobs.values()].filter(j=>j.status==='recording');
- if(active.length>=ACTIVE_LIMIT)throw error('The test server is currently recording another stream. Try again after that job finishes.',429);
+ reclaimStaleJobs();
+ const active=[...jobs.values()].filter(j=>j.status==='recording'||j.status==='starting');
+ if(active.length>=ACTIVE_LIMIT)throw error('Another recording is active on this beta server. Stop your previous recording from the dashboard first. Recordings with no new video are automatically released after 45 seconds.',429);
  const original=provider(url);
  const hasBackup=typeof captureHlsUrl==='string'&&captureHlsUrl.trim().length>0;
  if(hasBackup&&original.provider!=='YouTube')throw error('The optional authorized video feed is intended for YouTube Live.',422);
@@ -239,4 +264,4 @@ export function status(id,token){return view(readJob(id,token))}
 export function stop(id,token){const job=readJob(id,token);if(job.status!=='stopped'){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped'}return {ok:true,retainedClips:job.clips.filter(c=>c.state==='ready').length}}
 export function download(id,token,clipId,ext){const job=readJob(id,token);if(!['mp4','csv','json'].includes(ext))throw error('Invalid file type');const clip=job.clips.find(c=>c.id===clipId&&c.state==='ready');if(!clip)throw error('Clip not ready or not found.',404);const file=path.join(job.dir,clip.id+'.'+ext);if(!fs.existsSync(file))throw error('Recording file has expired.',410);return {file,type:ext==='mp4'?'video/mp4':ext==='csv'?'text/csv; charset=utf-8':'application/json',bytes:fs.statSync(file).size,name:'hypeclip-'+clip.id+'.'+ext}}
 export function tokenFromRequest(req){return securityToken(req)}
-setInterval(()=>{for(const [id,job] of jobs){if(Date.now()>job.expiresAt+120000){cleanup(job);jobs.delete(id)}}},60000).unref();
+setInterval(()=>{reclaimStaleJobs();for(const [id,job] of jobs){if(Date.now()>job.expiresAt+120000){cleanup(job);jobs.delete(id)}}},10000).unref();

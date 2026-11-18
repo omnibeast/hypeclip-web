@@ -139,7 +139,7 @@ $('stop').onclick=async()=>{
 $('clips').addEventListener('click',async e=>{
  const btn=e.target.closest('button.file');if(!btn)return;
  btn.disabled=true;const label=btn.textContent;btn.textContent='Downloading...';
- try{const resp=await fetch(btn.dataset.url,{headers:{'X-HypeClip-Token':token}});if(!resp.ok){const d=await resp.json();throw Error(d.error||'Download failed')}
+ try{const resp=await fetch(btn.dataset.url,{headers:{'X-HypeClip-Token':token}});if(!resp.ok){let msg='Download failed';try{const d=await resp.json();msg=d.error||msg}catch{}throw Object.assign(new Error(msg),{status:resp.status})}
  const blob=await resp.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=btn.dataset.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
  }catch(err){
    if(isSessionError(err)){clearSession('Recording session expired. Your previous clip files are no longer available.');return}

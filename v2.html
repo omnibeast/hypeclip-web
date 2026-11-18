@@ -46,7 +46,7 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 </section></div>
 <section class="panel" id="jobPanel"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><h2>3. Your recording session</h2><span id="jobBadge" class="badge">Not started</span></div>
 <div class="slots"><div class="slot"><div class="muted">Status</div><div id="jobState" class="num" style="font-size:17px">Idle</div></div><div class="slot"><div class="muted">Buffered segments</div><div id="segments" class="num">0</div></div><div class="slot"><div class="muted">Elapsed</div><div id="elapsed" class="num">0s</div></div></div>
-<div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="stop" class="secondary" disabled>Stop recording</button></div>
+<div class="controls"><button id="clip" disabled>✂ Save clean MP4 highlight</button><button id="stop" class="secondary" disabled>Stop recording</button><button id="resetJob" class="secondary" type="button">Start fresh session</button></div>
 <div id="jobStatus" role="status">Start recording a livestream you own or have permission to record. For YouTube Live, chat spikes can also trigger automatic clips.</div>
 </section>
 <section class="panel" id="hypePanel">
@@ -65,10 +65,21 @@ function clearSession(reason=''){
  sessionStorage.removeItem('hypeclip-v2-session');
  jobId='';token='';
  $('clip').disabled=true;$('stop').disabled=true;
+ $('clips').innerHTML='<p class="hint">Clips from the previous session are no longer shown. Start a new recording to create more.</p>';
  $('jobBadge').textContent='Not started';$('jobState').textContent='Idle';$('segments').textContent='0';$('elapsed').textContent='0s';plotHype([]);
  if(reason)$('jobStatus').textContent=reason;
 }
 function isSessionError(e){return e&&[401,403,404,410].includes(e.status)}
+$('resetJob').onclick=async()=>{
+ if(jobId&&token){
+  const proceed=confirm('Start a fresh recording session? Stop the current job and release its slot. Download any finished clips first; this will clear their links from this page.');
+  if(!proceed)return;
+  try{await request('/api/v2/jobs/'+jobId+'/stop','POST',{})}catch(e){if(!isSessionError(e)){$('jobStatus').textContent='Could not stop previous session: '+e.message;return}}
+ }
+ clearSession('Previous recording stopped. You can start another recording or test now.');
+ message('Ready for a new recording session.');
+ $('recordOptions').classList.add('hidden');
+};
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=d=>new Date(d).toLocaleString();
@@ -83,7 +94,7 @@ async function request(url,method='GET',body=null){
 }
 function message(text,isError=false){$('result').textContent=text;$('result').className=isError?'bad':''}
 $('demo').onclick=async()=>{
- if(jobId){message('Stop the active recording before starting a test.',true);return}
+ if(jobId){message('A previous session is still selected. Click Start fresh session to release its slot first.',true);return}
  $('demo').disabled=true;message('Starting a server-generated test video (no external links or screen sharing)...');
  try{
   const data=await request('/api/v2/jobs','POST',{url:'demo://test-pattern',confirmedRights:true});
@@ -100,7 +111,7 @@ $('demo').onclick=async()=>{
 };
 $('inspect').onclick=async()=>{
  $('recordOptions').classList.add('hidden');activeURL=$('url').value.trim();
- if(jobId){message('A recording session is already active. Stop it before starting another.');return}
+ if(jobId){message('Click Start fresh session to release your previous recording before starting another.');return}
  try{sessionStorage.setItem('hypeclip-v2-last-url',activeURL)}catch{}
  $('inspect').disabled=true;message('Checking platform...');
  try{const data=await request('/api/v2/inspect','POST',{url:activeURL});

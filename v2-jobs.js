@@ -9,10 +9,12 @@ import youtubedl from 'youtube-dl-exec';
 import {bestHlsUrl} from './server-hls.js';
 
 const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5;
+const DEMO_SOURCE='demo://test-pattern';
 const guid=()=>crypto.randomUUID(),safeId=s=>/^[a-f0-9-]{36}$/.test(s||'');
 function error(message,status=400){return {error:message,status}}
 const allowedHosts=()=>new Set((process.env.HYPECLIP_ALLOWED_HLS_HOSTS||'').split(',').map(h=>h.trim().toLowerCase()).filter(Boolean));
 function provider(url){
+ if(url===DEMO_SOURCE)return {provider:'Built-in video test',status:'ready',reason:'Self-generated test footage. Validates server recording, clean MP4 creation, CSV/JSON logs and downloads without YouTube access.'};
  let u;try{u=new URL(url)}catch{return {provider:'unknown',status:'invalid',reason:'Enter a full HTTPS livestream URL.'}}
  if(u.protocol!=='https:'||u.username||u.password)return {provider:'unknown',status:'invalid',reason:'Use a standard HTTPS URL without credentials.'};
  const host=u.hostname.toLowerCase();
@@ -63,19 +65,23 @@ export async function start({url,confirmedRights},req){
  const active=[...jobs.values()].filter(j=>j.status==='recording');
  if(active.length>=ACTIVE_LIMIT)throw error('The test server is currently recording another stream. Try again after that job finishes.',429);
  const parsed=provider(url);if(parsed.status!=='ready')throw error(parsed.reason,422);
+ const isDemo=parsed.provider==='Built-in video test';
  const isDirectHls=parsed.provider==='Direct HLS';
- const validated=isDirectHls?await validateURL(url):new URL(url).toString();
+ const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(url):new URL(url).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
  const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:parsed.provider,error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null},chatStop:false};jobs.set(id,job);
  let extractor=null;
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
- const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',sourceInput,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
- const child=spawn(ffmpeg,args,{stdio:[isDirectHls?'ignore':'pipe','ignore','pipe']});job.child=child;job.status='recording';
+ const output=path.join(dir,'part-%06d.ts');
+ // Built-in synthetic source makes the complete capture -> clip -> download path testable.
+ const demoArgs=['-hide_banner','-loglevel','error','-nostdin','-re','-f','lavfi','-i','testsrc2=size=640x360:rate=15','-re','-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-map','0:v:0','-map','1:a:0','-c:v','libx264','-preset','ultrafast','-g','30','-b:v','650k','-pix_fmt','yuv420p','-c:a','aac','-b:a','96k','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',output];
+ const args=isDemo?demoArgs:['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',sourceInput,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',output];
+ const child=spawn(ffmpeg,args,{stdio:[isDemo||isDirectHls?'ignore':'pipe','ignore','pipe']});job.child=child;job.status='recording';
  child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
  child.on('error',e=>{job.error='FFmpeg recorder launch failed: '+e.message;job.status='failed';job.child=null});
  child.on('close',c=>{if(job.child===child){job.child=null;job.status='failed';job.error=job.error||'Recorder closed unexpectedly ('+c+').' }});
- if(!isDirectHls){
+ if(!isDirectHls&&!isDemo){
    // Only the canonical platform URL (never an arbitrary host) reaches the extractor.
    // No cookies, login state, special headers, DRM circumvention or bypass options.
    try{
@@ -125,7 +131,7 @@ export async function start({url,confirmedRights},req){
      });
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }
- job.timer=setInterval(()=>{if(Date.now()>job.expiresAt)cleanup(job)},5000);
+ job.timer=setInterval(()=>{if(Date.now()>job.expiresAt&&job.status==='recording'){job.chatStop=true;job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
  if(job.provider==='YouTube'&&process.env.YOUTUBE_API_KEY)void monitorChat(job,validated);
  return {job:view(job),token};
 }
@@ -212,7 +218,7 @@ export async function createClip(id,token,settings={}){
  return {id:clip.id,state:clip.state};
 }
 export function status(id,token){return view(readJob(id,token))}
-export function stop(id,token){const job=readJob(id,token);cleanup(job);jobs.delete(id);return {ok:true}}
+export function stop(id,token){const job=readJob(id,token);if(job.status!=='stopped'){job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped'}return {ok:true,retainedClips:job.clips.filter(c=>c.state==='ready').length}}
 export function download(id,token,clipId,ext){const job=readJob(id,token);if(!['mp4','csv','json'].includes(ext))throw error('Invalid file type');const clip=job.clips.find(c=>c.id===clipId&&c.state==='ready');if(!clip)throw error('Clip not ready or not found.',404);const file=path.join(job.dir,clip.id+'.'+ext);if(!fs.existsSync(file))throw error('Recording file has expired.',410);return {file,type:ext==='mp4'?'video/mp4':ext==='csv'?'text/csv; charset=utf-8':'application/json',bytes:fs.statSync(file).size,name:'hypeclip-'+clip.id+'.'+ext}}
 export function tokenFromRequest(req){return securityToken(req)}
 setInterval(()=>{for(const [id,job] of jobs){if(Date.now()>job.expiresAt+120000){cleanup(job);jobs.delete(id)}}},60000).unref();

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import ffmpeg from 'ffmpeg-static';
+import {bestHlsUrl} from './server-hls.js';
 
 const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5;
 const guid=()=>crypto.randomUUID(),safeId=s=>/^[a-f0-9-]{36}$/.test(s||'');
@@ -49,9 +50,9 @@ export async function start({url,confirmedRights},req){
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
  const active=[...jobs.values()].filter(j=>j.status==='recording');
  if(active.length>=ACTIVE_LIMIT)throw error('The test server is currently recording another stream. Try again after that job finishes.',429);
- const validated=await validateURL(url),id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
+ const validated=await validateURL(url);const playlist=await bestHlsUrl(validated);const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
  const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:'Direct HLS',error:'',clips:[],child:null,timer:null};jobs.set(id,job);
- const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',validated,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
+ const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',playlist.toString(),'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
  const child=spawn(ffmpeg,args,{stdio:['ignore','ignore','pipe']});job.child=child;job.status='recording';
  child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(0,250)});
  child.on('error',e=>{job.error='Recorder launch failed: '+e.message;job.status='failed';job.child=null});

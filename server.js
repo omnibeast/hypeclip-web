@@ -1,7 +1,8 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import {ingest,makeClip,getClip,snapshot,stopRecording} from './recorder.js';
+import {ingest,makeClip,getClip,getClipLog,snapshot,stopRecording} from './recorder.js';
+import {startServerCapture,stopServerCapture,serverCaptureStatus} from './server-hls.js';
 const PORT=Number(process.env.PORT||4173),PASSWORD=process.env.HYPECLIP_PASSWORD||'',KEY=process.env.YOUTUBE_API_KEY||'';
 if(process.env.NODE_ENV==='production'&&!PASSWORD)throw Error('Set HYPECLIP_PASSWORD');
 const clients=new Set();let interval=null,session=0;
@@ -30,7 +31,29 @@ async function youtube(endpoint,params){const u=new URL('https://www.googleapis.
 async function startReal(opts){if(!KEY)throw Error('YouTube API key is not configured. Try demo mode.');const id=youtubeId(opts.url);if(!/^[\w-]{11}$/.test(id||''))throw Error('Invalid YouTube video ID');const info=await youtube('videos',{part:'snippet,liveStreamingDetails',id}),video=info.items?.[0];if(!video?.liveStreamingDetails?.activeLiveChatId)throw Error('Video is not live with publicly accessible chat');stop();const token=session;Object.assign(state,{status:'monitoring',mode:'youtube',title:video.snippet?.title||'YouTube livestream',url:opts.url,count:0,rate:0,peak:0,baseline:0,messages:[],events:[],history:[],error:'',startedAt:Date.now(),lastEvent:0,sensitivity:opts.sensitivity||'balanced'});const chatId=video.liveStreamingDetails.activeLiveChatId;let pageToken='',seen=new Set();interval=setInterval(()=>{if(token===session)analyze()},2000);send();(async()=>{while(token===session){let delay=5000;try{const params={part:'id,snippet,authorDetails',liveChatId:chatId,maxResults:200,...(pageToken?{pageToken}:{})},data=await youtube('liveChat/messages',params);pageToken=data.nextPageToken||pageToken;for(const m of data.items||[]){if(seen.has(m.id))continue;seen.add(m.id);if(seen.size>20000)seen.clear();add(m.snippet?.displayMessage||'',m.authorDetails?.displayName||'Viewer',Date.parse(m.snippet?.publishedAt)||Date.now())}delay=Math.max(1500,Number(data.pollingIntervalMillis||5000));state.error='';send()}catch(e){state.error=e.message;delay=15000;send()}await new Promise(r=>setTimeout(r,delay))}})()}
 function authorized(req){if(!PASSWORD)return true;const h=req.headers.authorization||'';if(!h.startsWith('Basic '))return false;let raw='';try{raw=Buffer.from(h.slice(6),'base64').toString()}catch{return false}const i=raw.indexOf(':');if(i<0)return false;const a=Buffer.from(raw.slice(i+1)),b=Buffer.from(PASSWORD);return a.length===b.length&&crypto.timingSafeEqual(a,b)}
 const html=fs.readFileSync(new URL('./index.html',import.meta.url));
-http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());if(path==='/api/segment'&&req.method==='POST'){const out=await ingest(req);Object.assign(state,snapshot());send();return json(res,out)}if(path==='/api/recording-stop'&&req.method==='POST'){stopRecording();send();return json(res,{ok:true})}if(path==='/api/settings'&&req.method==='POST'){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>4096)throw Error('Settings request too large')}const opts=JSON.parse(raw||'{}');state.settings=normalizedSettings(opts,state.settings);send();return json(res,{ok:true,settings:state.settings})}if(path==='/api/clip'&&req.method==='POST'){const event={at:Date.now(),count:state.rate,unique:0,score:0,clip:'Encoding MP4...',clipStatus:'encoding',manual:true};state.events.unshift(event);state.events=state.events.slice(0,35);send();makeClip({at:event.at,before:state.settings.manualBefore,after:state.settings.manualAfter,quality:state.settings.quality,onUpdate:update=>{if(update.status==='ready'){event.clip='Download MP4';event.clipStatus='ready';event.clipUrl=update.url}else if(update.status==='failed'){event.clip=update.error;event.clipStatus='failed'}send()}}).then(result=>{if(!result.ok&&event.clipStatus!=='failed'){event.clipStatus='failed';event.clip=result.error;send()}});return json(res,{ok:true})}if(path.startsWith('/api/clips/')&&req.method==='GET'){
+http.createServer(async(req,res)=>{try{const path=new URL(req.url,'http://localhost').pathname;if(path==='/healthz')return json(res,{ok:true});if(!authorized(req)){res.writeHead(401,{'www-authenticate':'Basic realm="HypeClip Testing"'});return res.end('Login required')}if(path==='/'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html)}if(path==='/api/state'){Object.assign(state,snapshot());return json(res,state)}if(path==='/api/recording-status')return json(res,snapshot());
+if(path==='/api/server-capture/start'&&req.method==='POST'){
+ let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>8192)throw Error('Video source URL too long')}
+ const opts=JSON.parse(raw||'{}');
+ if(typeof opts.hlsUrl!=='string')throw Error('Provide an authorized direct HTTPS HLS URL.');
+ const result=await startServerCapture(opts.hlsUrl);
+ console.log('Authorized clean HLS server capture started for hostname:',result.sourceHost);
+ send();return json(res,result);
+}
+if(path==='/api/server-capture/stop'&&req.method==='POST'){
+ stopServerCapture();send();return json(res,{ok:true});
+}if(path==='/api/segment'&&req.method==='POST'){const out=await ingest(req);Object.assign(state,snapshot());send();return json(res,out)}if(path==='/api/recording-stop'&&req.method==='POST'){stopRecording();send();return json(res,{ok:true})}if(path==='/api/settings'&&req.method==='POST'){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>4096)throw Error('Settings request too large')}const opts=JSON.parse(raw||'{}');state.settings=normalizedSettings(opts,state.settings);send();return json(res,{ok:true,settings:state.settings})}if(path==='/api/clip'&&req.method==='POST'){const event={at:Date.now(),count:state.rate,unique:0,score:0,clip:'Encoding MP4...',clipStatus:'encoding',manual:true};state.events.unshift(event);state.events=state.events.slice(0,35);send();makeClip({at:event.at,before:state.settings.manualBefore,after:state.settings.manualAfter,quality:state.settings.quality,onUpdate:update=>{if(update.status==='ready'){event.clip='Download MP4';event.clipStatus='ready';event.clipUrl=update.url}else if(update.status==='failed'){event.clip=update.error;event.clipStatus='failed'}send()}}).then(result=>{if(!result.ok&&event.clipStatus!=='failed'){event.clipStatus='failed';event.clip=result.error;send()}});return json(res,{ok:true})}if(path.startsWith('/api/clips/')&&req.method==='GET'&&/\.(csv|json)$/.test(path)){
+ const match=/^\/api\/clips\/([a-zA-Z0-9_-]+)\.(csv|json)$/.exec(path);
+ if(!match)return json(res,{error:'Invalid clip metadata link'},400);
+ const file=getClipLog(match[1],match[2]);
+ if(!file||!fs.existsSync(file))return json(res,{error:'The timestamp log has expired after a server restart.'},410);
+ const size=fs.statSync(file).size;
+ res.writeHead(200,{'content-type':match[2]==='csv'?'text/csv; charset=utf-8':'application/json; charset=utf-8',
+ 'content-disposition':'attachment; filename="hypeclip-'+match[1]+'-timestamps.'+match[2]+'"',
+ 'content-length':size,'cache-control':'no-store','x-content-type-options':'nosniff'});
+ return fs.createReadStream(file).pipe(res);
+}
+if(path.startsWith('/api/clips/')&&req.method==='GET'){
  const match=/^\/api\/clips\/([a-zA-Z0-9_-]+)\.mp4$/.exec(path);
  if(!match)return json(res,{error:'Invalid MP4 clip URL'},400);
  const clip=getClip(match[1]);

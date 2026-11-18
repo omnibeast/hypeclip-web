@@ -114,8 +114,8 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
        job.error=botCheck
         ?'YouTube required sign-in/bot verification from this server. Server-side recording is unavailable for this stream; no authentication bypass is attempted.'
         :'Stream extraction failed: '+message.replace(/https?:\/\/[^\s]+/g,'[source]').slice(-300);
-       if(job.status==='recording'||job.status==='starting')job.status='failed';
-       job.chatStop=true;
+       if(job.status==='recording'||job.status==='starting')job.status=job.chatVideoUrl?'chat-only':'failed';
+       job.chatStop=!job.chatVideoUrl;
        try{extractor.stdout.unpipe(child.stdin)}catch{}
        try{child.stdin.end()}catch{}
        try{child.kill('SIGTERM')}catch{}
@@ -138,16 +138,16 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
        if(job.extractor===extractor){
          job.extractor=null;
          if(job.status==='recording'){
-           job.status='failed';
+           job.status=job.chatVideoUrl?'chat-only':'failed';
            job.error=job.error||'Extractor exited ('+c+'). Stream may be offline or blocked.';
-           job.chatStop=true;
+           job.chatStop=!job.chatVideoUrl;
            try{child.kill('SIGTERM')}catch{}
          }
        }
      });
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }
- job.timer=setInterval(()=>{if(job.status==='recording'&&Date.now()-job.createdAt>30000&&scan(job).length===0){job.error=job.error||'No video segments arrived within 30 seconds. Check whether this stream is accessible to the server.';job.status='failed';job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}}if(Date.now()>job.expiresAt&&job.status==='recording'){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
+ job.timer=setInterval(()=>{if(job.status==='recording'&&Date.now()-job.createdAt>30000&&scan(job).length===0){job.error=job.error||'No video segments arrived within 30 seconds. Check whether this stream is accessible to the server.';job.status='failed';job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}}if(Date.now()>job.expiresAt&&(job.status==='recording'||job.status==='chat-only')){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
  if(isDemo){job.chat.status='simulated';job.demoTick=0;job.hypeTimer=setInterval(()=>{if(job.status!=='recording'){clearInterval(job.hypeTimer);return}const t=job.demoTick++,spike=t%55>=26&&t%55<=36;const rate=spike?Math.floor(17+Math.random()*18):Math.floor(Math.random()*6);const baseline=5;job.chat.recentRate=rate;job.chat.baseline=baseline;recordHype(job,rate,baseline,spike?8:2,'demo');},2000)}
  if(job.chatVideoUrl&&process.env.YOUTUBE_API_KEY)void monitorChat(job,job.chatVideoUrl);
  return {job:view(job),token};
@@ -176,7 +176,7 @@ async function monitorChat(job,url){
   const chatId=video.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
   if(!chatId)throw Error('Live chat is disabled or stream is not currently live.');
   job.chat.status='monitoring';
-  while(!job.chatStop&&job.status==='recording'){
+  while(!job.chatStop&&(job.status==='recording'||job.status==='chat-only')){
    let pause=5000;
    try{
     const results=await youtubeAPI('liveChat/messages',{part:'id,snippet,authorDetails',liveChatId:chatId,maxResults:200,...(page?{pageToken:page}:{})});
@@ -196,7 +196,7 @@ async function monitorChat(job,url){
     job.chat.count+=arrivals.length;job.chat.recentRate=last10.length;job.chat.baseline=Math.round(baseline*10)/10;
     job.chat.status='monitoring';job.chat.error='';
     recordHype(job,last10.length,baseline,unique,'youtube-chat');
-    if(now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
+    if(job.status==='recording'&&scan(job).length>=2&&now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
       lastEvent=now;job.chat.lastEvent=new Date(now).toISOString();
       void createClip(job.id,job.token,{before:25,after:20,quality:'1080',automatic:true}).catch(e=>{job.chat.error=e.error||e.message});
     }

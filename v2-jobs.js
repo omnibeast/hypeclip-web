@@ -17,8 +17,8 @@ function provider(url){
  if(u.protocol!=='https:'||u.username||u.password)return {provider:'unknown',status:'invalid',reason:'Use a standard HTTPS URL without credentials.'};
  const host=u.hostname.toLowerCase();
  if(host==='youtube.com'||host==='www.youtube.com'||host==='m.youtube.com'||host==='youtu.be'){
- const approved=process.env.HYPECLIP_YOUTUBE_CAPTURE_APPROVED==='true';
- return {provider:'YouTube',status:approved?'ready':'platform-approval-required',reason:approved?'Provider-approved YouTube recording enabled for this server. Source must be publicly accessible and you must have the right to record.':'YouTube does not authorize general download/recording from public URLs. This server requires prior YouTube approval before enabling automatic capture.'};
+ const beta=process.env.HYPECLIP_PRIVATE_BETA_CAPTURE==='true';
+ return {provider:'YouTube',status:beta?'ready':'private-beta-disabled',reason:beta?'Private beta source-capture test. Only use for your own or authorized, publicly accessible livestream; compatibility is not guaranteed.':'YouTube video recording is disabled on this server until private-betacapture is enabled.'};
 }
  if(host==='twitch.tv'||host==='www.twitch.tv')return {provider:'Twitch',status:'ready',reason:'Experimental public-stream extractor available. Only record content you have rights and platform permission to use; access/DRM failures may occur.'};
  if(host==='kick.com'||host==='www.kick.com')return {provider:'Kick',status:'ready',reason:'Experimental public-stream extractor available. Only record content you have rights and platform permission to use; access/DRM failures may occur.'};
@@ -40,15 +40,15 @@ async function validateURL(raw){
  const addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>privateIP(a.address)))throw error('Restricted source address.');
  return u.toString();
 }
-function cleanup(job){if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
+function cleanup(job){job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
 function scan(job){
  if(!fs.existsSync(job.dir))return [];
  const names=fs.readdirSync(job.dir).filter(n=>/^part-\d{6}\.ts$/.test(n)).sort().slice(-MAX_SEGMENTS);
  return names.map(n=>{const file=path.join(job.dir,n),s=fs.statSync(file);return {file,at:s.mtimeMs,size:s.size}}).filter(s=>s.size>200);
 }
-function view(job){const segs=scan(job);return {id:job.id,provider:job.provider,status:job.status,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}}
+function view(job){const segs=scan(job);return {id:job.id,provider:job.provider,status:job.status,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}}
 function readJob(id,token){const job=jobs.get(id);if(!job||!token||token!==job.token)throw error('Job not found or access token invalid.',404);return job}
-function securityToken(req){const h=req.headers['authorization']||'';return h.startsWith('Bearer ')?h.slice(7):''}
+function securityToken(req){return String(req.headers['x-hypeclip-token']||'')}
 export async function start({url,confirmedRights},req){
  if(!confirmedRights)throw error('Confirm you own or have permission to record this video source.');
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
@@ -59,7 +59,7 @@ export async function start({url,confirmedRights},req){
  const validated=isDirectHls?await validateURL(url):new URL(url).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:parsed.provider,error:'',clips:[],child:null,extractor:null,timer:null};jobs.set(id,job);
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:parsed.provider,error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null},chatStop:false};jobs.set(id,job);
  let extractor=null;
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
  const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',sourceInput,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
@@ -85,8 +85,62 @@ export async function start({url,confirmedRights},req){
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }
  job.timer=setInterval(()=>{if(Date.now()>job.expiresAt)cleanup(job)},5000);
+ if(job.provider==='YouTube'&&process.env.YOUTUBE_API_KEY)void monitorChat(job,validated);
  return {job:view(job),token};
 }
+
+function videoId(raw){
+ const u=new URL(raw);
+ if(u.hostname==='youtu.be')return u.pathname.split('/')[1];
+ if(u.pathname.startsWith('/live/'))return u.pathname.split('/')[2];
+ return u.searchParams.get('v');
+}
+async function youtubeAPI(endpoint,query){
+ const u=new URL('https://www.googleapis.com/youtube/v3/'+endpoint);
+ for(const [k,v] of Object.entries({...query,key:process.env.YOUTUBE_API_KEY}))u.searchParams.set(k,String(v));
+ const resp=await fetch(u,{signal:AbortSignal.timeout(12000)});
+ const data=await resp.json();
+ if(!resp.ok)throw Error(data.error?.message||'YouTube API unavailable');
+ return data;
+}
+async function monitorChat(job,url){
+ let seen=new Set(),page='',previous=[],lastEvent=0,started=false;
+ try{
+  const id=videoId(url);
+  if(!/^[a-zA-Z0-9_-]{11}$/.test(id||''))throw Error('Invalid YouTube live video ID');
+  const video=await youtubeAPI('videos',{part:'liveStreamingDetails',id});
+  const chatId=video.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
+  if(!chatId)throw Error('Live chat is disabled or stream is not currently live.');
+  job.chat.status='monitoring';
+  while(!job.chatStop&&job.status==='recording'){
+   let pause=5000;
+   try{
+    const results=await youtubeAPI('liveChat/messages',{part:'id,snippet,authorDetails',liveChatId:chatId,maxResults:200,...(page?{pageToken:page}:{})});
+    page=results.nextPageToken||page;pause=Math.max(3000,Number(results.pollingIntervalMillis||5000));
+    const arrivals=[];
+    for(const m of results.items||[]){
+     if(seen.has(m.id))continue;
+     seen.add(m.id);
+     const t=Date.parse(m.snippet?.publishedAt)||Date.now();
+     if(started&&t>Date.now()-15000)arrivals.push({at:t,author:m.authorDetails?.channelId||m.id});
+    }
+    if(seen.size>8000)seen=new Set([...seen].slice(-4000));
+    started=true;const now=Date.now();
+    previous.push(...arrivals);previous=previous.filter(m=>m.at>now-120000);
+    const last10=previous.filter(m=>m.at>now-10000),unique=new Set(last10.map(m=>m.author)).size;
+    const baseline=Math.max(1,(previous.length-last10.length)/11);
+    job.chat.count+=arrivals.length;job.chat.recentRate=last10.length;job.chat.baseline=Math.round(baseline*10)/10;
+    job.chat.status='monitoring';job.chat.error='';
+    if(now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
+      lastEvent=now;job.chat.lastEvent=new Date(now).toISOString();
+      void createClip(job.id,job.token,{before:25,after:20,quality:'1080',automatic:true}).catch(e=>{job.chat.error=e.error||e.message});
+    }
+   }catch(e){job.chat.error=String(e.message).slice(0,180);pause=15000}
+   await new Promise(r=>setTimeout(r,pause));
+  }
+ }catch(e){job.chat.status='unavailable';job.chat.error=String(e.message).slice(0,180)}
+}
+
 function encode(files,out,quality){
  return new Promise((resolve,reject)=>{
  const list=out+'.txt';fs.writeFileSync(list,files.map(f=>"file '"+f.replace(/'/g,"'\\''")+"'").join('\n'));

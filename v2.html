@@ -89,10 +89,16 @@ async function stopBrowserCapture({finish=true}={}){
  browserRecording=false;
  if(browserSegmentTimer){clearTimeout(browserSegmentTimer);browserSegmentTimer=null}
  const recorder=browserRecorder;browserRecorder=null;
- if(recorder&&recorder.state==='recording')recorder.stop();
- // All completed segments must reach the server before finalizing.
- if(browserStream){for(const track of browserStream.getTracks())track.stop();browserStream=null}
+ // Wait for the final MediaRecorder dataavailable and onstop events before
+ // waiting for uploads, or the final video segment would be silently lost.
+ let finalized=Promise.resolve();
+ if(recorder&&recorder.state==='recording'){
+  finalized=new Promise(resolve=>recorder.addEventListener('stop',resolve,{once:true}));
+  recorder.stop();
+ }
+ await finalized;
  try{await browserUploads}catch(e){updateBrowserText('Upload failed: '+e.message)}
+ if(browserStream){for(const track of browserStream.getTracks())track.stop();browserStream=null}
  if(finish&&jobId&&token){try{await request('/api/v2/jobs/'+jobId+'/finish','POST',{})}catch(e){updateBrowserText('Finished locally; server: '+e.message)}}
  $('browserStart').disabled=false;$('browserStop').disabled=true;
  $('browserBadge').textContent='Stopped';
@@ -106,6 +112,7 @@ async function recordBrowserSegment(){
  if(!browserRecording||!browserStream)return;
  const type=supportedCaptureMime(),bits=Number($('browserPreset').value==='maximum'?45000000:$('browserPreset').value==='ultra'?30000000:18000000);
  const opts={videoBitsPerSecond:bits,audioBitsPerSecond:192000};
+ const videoSettings=browserStream.getVideoTracks()[0]?.getSettings()||{},hasSharedAudio=browserStream.getAudioTracks().length>0;
  if(type)opts.mimeType=type;
  let recorder;try{recorder=new MediaRecorder(browserStream,opts)}catch(e){updateBrowserText('Cannot encode selected browser video: '+e.message);await stopBrowserCapture();return}
  browserRecorder=recorder;const chunks=[];
@@ -114,9 +121,9 @@ async function recordBrowserSegment(){
  recorder.onstop=()=>{
   const segment=new Blob(chunks,{type:recorder.mimeType||'video/webm'});
   if(segment.size>1000&&jobId&&token){
-   const id=jobId,sessionToken=token,settings=browserStream?.getVideoTracks()[0]?.getSettings()||{};
+   const id=jobId,sessionToken=token,settings=videoSettings;
    browserUploads=browserUploads.then(async()=>{
-    const res=await fetch('/api/v2/jobs/'+id+'/segments',{method:'POST',headers:{'X-HypeClip-Token':sessionToken,'Content-Type':'video/webm','X-Capture-Width':String(settings.width||0),'X-Capture-Height':String(settings.height||0),'X-Capture-Fps':String(settings.frameRate||0),'X-Capture-Audio':String(browserStream?.getAudioTracks().length>0)},body:segment});
+    const res=await fetch('/api/v2/jobs/'+id+'/segments',{method:'POST',headers:{'X-HypeClip-Token':sessionToken,'Content-Type':'video/webm','X-Capture-Width':String(settings.width||0),'X-Capture-Height':String(settings.height||0),'X-Capture-Fps':String(settings.frameRate||0),'X-Capture-Audio':String(hasSharedAudio)},body:segment});
     if(!res.ok){let msg='HTTP '+res.status;try{const body=await res.json();msg=body.error||msg}catch{}throw Error(msg)}
    }).catch(e=>{updateBrowserText('Segment upload problem: '+e.message);browserRecording=false;if(browserStream){browserStream.getTracks().forEach(t=>t.stop())}});
   }
@@ -146,7 +153,8 @@ $('browserStart').onclick=async()=>{
   browserStream=stream;
   const video=stream.getVideoTracks()[0],settings=video.getSettings();
   if(!video)throw Error('No video track selected');
-  const data=await request('/api/v2/jobs','POST',{url:'browser://capture',confirmedRights:true,chatUrl:$('browserChat').value.trim()||$('url').value.trim()||undefined});
+  const chatLink=$('browserChat').value.trim()||((/^https:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\//i).test($('url').value.trim())?$('url').value.trim():'');
+  const data=await request('/api/v2/jobs','POST',{url:'browser://capture',confirmedRights:true,chatUrl:chatLink||undefined});
   jobId=data.job.id;token=data.token;
   sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:'',mode:'browser'}));
   browserRecording=true;

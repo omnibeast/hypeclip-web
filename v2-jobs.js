@@ -8,7 +8,7 @@ import ffmpeg from 'ffmpeg-static';
 import youtubedl from 'youtube-dl-exec';
 import {bestHlsUrl} from './server-hls.js';
 
-const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5;
+const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5, HISTORY_LIMIT=180;
 const DEMO_SOURCE='demo://test-pattern';
 const guid=()=>crypto.randomUUID(),safeId=s=>/^[a-f0-9-]{36}$/.test(s||'');
 function error(message,status=400){return {error:message,status}}
@@ -42,13 +42,23 @@ async function validateURL(raw){
  const addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>privateIP(a.address)))throw error('Restricted source address.');
  return u.toString();
 }
-function cleanup(job){job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
+function cleanup(job){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
 function scan(job){
  if(!fs.existsSync(job.dir))return [];
  const names=fs.readdirSync(job.dir).filter(n=>/^part-\d{6}\.ts$/.test(n)).sort().slice(-MAX_SEGMENTS);
  return names.map(n=>{const file=path.join(job.dir,n),s=fs.statSync(file);return {file,at:s.mtimeMs,size:s.size}}).filter(s=>s.size>200);
 }
-function view(job){const segs=scan(job);return {id:job.id,provider:job.provider,status:job.status,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}}
+function recordHype(job,rate,baseline=0,unique=0,source='chat'){
+ const now=Date.now();const entry={at:now,rate:Math.max(0,Number(rate)||0),baseline:Math.max(0,Number(baseline)||0),unique:Math.max(0,Number(unique)||0),source};
+ if(!job.hypeHistory)job.hypeHistory=[];
+ job.hypeHistory.push(entry);if(job.hypeHistory.length>HISTORY_LIMIT)job.hypeHistory.splice(0,job.hypeHistory.length-HISTORY_LIMIT);
+ return entry;
+}
+function view(job){
+ const segs=scan(job);const bufferedBytes=segs.reduce((n,x)=>n+x.size,0);
+ const recordingHealth=job.status==='starting'?'starting':job.status==='recording'&&!segs.length?'waiting-for-video':job.status==='recording'?'buffering':job.status;
+ return {id:job.id,provider:job.provider,status:job.status,recordingHealth,createdAt:job.createdAt,expiresAt:job.expiresAt,segments:segs.length,bufferedBytes,elapsedSeconds:Math.round((Date.now()-job.createdAt)/1000),error:job.error,chat:job.chat,hypeHistory:job.hypeHistory||[],clips:job.clips.map(c=>({id:c.id,state:c.state,error:c.error,createdAt:c.createdAt,bytes:c.bytes||0,metadata:c.metadata||null}))}
+}
 function readJob(id,token){
  const job=jobs.get(id);
  // Render free instances use ephemeral memory; jobs expire on redeploy or restart.
@@ -76,7 +86,7 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
  const validated=isDemo?DEMO_SOURCE:isDirectHls?await validateURL(source):new URL(source).toString();
  const playlist=isDirectHls?await bestHlsUrl(validated):validated;
  const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null},chatStop:false};jobs.set(id,job);
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:hasBackup?'YouTube + clean HLS':parsed.provider,chatVideoUrl:hasBackup?url:(parsed.provider==='YouTube'?validated:null),error:'',clips:[],child:null,extractor:null,timer:null,chat:{status:'inactive',count:0,lastEvent:null,recentRate:0,baseline:0},hypeHistory:[],chatStop:false};jobs.set(id,job);
  let extractor=null;
  const sourceInput=isDirectHls?playlist.toString():'pipe:0';
  const output=path.join(dir,'part-%06d.ts');
@@ -137,7 +147,8 @@ export async function start({url,confirmedRights,captureHlsUrl},req){
      });
    }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
  }
- job.timer=setInterval(()=>{if(Date.now()>job.expiresAt&&job.status==='recording'){job.chatStop=true;job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
+ job.timer=setInterval(()=>{if(job.status==='recording'&&Date.now()-job.createdAt>30000&&scan(job).length===0){job.error=job.error||'No video segments arrived within 30 seconds. Check whether this stream is accessible to the server.';job.status='failed';job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}}if(Date.now()>job.expiresAt&&job.status==='recording'){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);job.status='finished';if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}clearInterval(job.timer);job.timer=null}},5000);
+ if(isDemo){job.chat.status='simulated';job.demoTick=0;job.hypeTimer=setInterval(()=>{if(job.status!=='recording'){clearInterval(job.hypeTimer);return}const t=job.demoTick++,spike=t%55>=26&&t%55<=36;const rate=spike?Math.floor(17+Math.random()*18):Math.floor(Math.random()*6);const baseline=5;job.chat.recentRate=rate;job.chat.baseline=baseline;recordHype(job,rate,baseline,spike?8:2,'demo');},2000)}
  if(job.chatVideoUrl&&process.env.YOUTUBE_API_KEY)void monitorChat(job,job.chatVideoUrl);
  return {job:view(job),token};
 }
@@ -184,6 +195,7 @@ async function monitorChat(job,url){
     const baseline=Math.max(1,(previous.length-last10.length)/11);
     job.chat.count+=arrivals.length;job.chat.recentRate=last10.length;job.chat.baseline=Math.round(baseline*10)/10;
     job.chat.status='monitoring';job.chat.error='';
+    recordHype(job,last10.length,baseline,unique,'youtube-chat');
     if(now-job.createdAt>30000&&last10.length>=12&&unique>=4&&last10.length>=baseline*2.4&&now-lastEvent>65000&&job.clips.length<MAX_CLIPS&&!job.clips.some(c=>c.state==='encoding')){
       lastEvent=now;job.chat.lastEvent=new Date(now).toISOString();
       void createClip(job.id,job.token,{before:25,after:20,quality:'1080',automatic:true}).catch(e=>{job.chat.error=e.error||e.message});
@@ -224,7 +236,7 @@ export async function createClip(id,token,settings={}){
  return {id:clip.id,state:clip.state};
 }
 export function status(id,token){return view(readJob(id,token))}
-export function stop(id,token){const job=readJob(id,token);if(job.status!=='stopped'){job.chatStop=true;if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped'}return {ok:true,retainedClips:job.clips.filter(c=>c.state==='ready').length}}
+export function stop(id,token){const job=readJob(id,token);if(job.status!=='stopped'){job.chatStop=true;if(job.hypeTimer)clearInterval(job.hypeTimer);if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped'}return {ok:true,retainedClips:job.clips.filter(c=>c.state==='ready').length}}
 export function download(id,token,clipId,ext){const job=readJob(id,token);if(!['mp4','csv','json'].includes(ext))throw error('Invalid file type');const clip=job.clips.find(c=>c.id===clipId&&c.state==='ready');if(!clip)throw error('Clip not ready or not found.',404);const file=path.join(job.dir,clip.id+'.'+ext);if(!fs.existsSync(file))throw error('Recording file has expired.',410);return {file,type:ext==='mp4'?'video/mp4':ext==='csv'?'text/csv; charset=utf-8':'application/json',bytes:fs.statSync(file).size,name:'hypeclip-'+clip.id+'.'+ext}}
 export function tokenFromRequest(req){return securityToken(req)}
 setInterval(()=>{for(const [id,job] of jobs){if(Date.now()>job.expiresAt+120000){cleanup(job);jobs.delete(id)}}},60000).unref();

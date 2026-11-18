@@ -29,7 +29,11 @@ footer{margin-top:28px;font-size:12px;color:#879aad}
 <h2>1. Paste a livestream</h2><label for="url">Public livestream or authorized direct HLS URL</label><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=...">
 <div class="controls"><button id="inspect">Check stream support</button><button id="demo" type="button" class="secondary">▶ Test recording without YouTube</button><span class="hint">YouTube • Twitch • Kick • Direct HLS</span></div>
 <div id="result" role="status">Enter a URL to check what this service can do.</div>
-<div id="recordOptions" class="hidden"><label><input id="rights" type="checkbox" style="width:auto;margin-right:9px">I own this stream or have permission to record it.</label>
+<div id="recordOptions" class="hidden">
+<label for="backupHls">Optional: authorized clean video source (when YouTube blocks playback)</label>
+<input id="backupHls" type="url" placeholder="https://approved-stream-host.example/live/stream.m3u8" autocomplete="off">
+<div class="hint" style="margin:8px 0">Keep the YouTube link above for hype detection. If YouTube rejects recording, a direct .m3u8 feed you own can supply clean video. The feed hostname must be approved in Render's HYPECLIP_ALLOWED_HLS_HOSTS.</div>
+<label><input id="rights" type="checkbox" style="width:auto;margin-right:9px">I own this stream or have permission to record it.</label>
 <div class="controls"><button id="startJob">Start background recording</button></div></div>
 <div class="note">Platform detection does not guarantee recording rights or access. Private beta testing only. Confirm you own the livestream or have recording permission. YouTube beta capture is not a statement of platform approval; unprotected public streams may still fail. HypeClip does not bypass DRM, private-stream authentication or access restrictions.</div>
 </section><section class="panel"><h2>2. Clip settings</h2>
@@ -98,7 +102,7 @@ $('inspect').onclick=async()=>{
 $('startJob').onclick=async()=>{
  $('startJob').disabled=true;
  try{
- const data=await request('/api/v2/jobs','POST',{url:activeURL,confirmedRights:$('rights').checked});
+ const data=await request('/api/v2/jobs','POST',{url:activeURL,confirmedRights:$('rights').checked,captureHlsUrl:$('backupHls').value.trim()});
  jobId=data.job.id;token=data.token;sessionStorage.setItem('hypeclip-v2-session',JSON.stringify({id:jobId,token,url:activeURL}));
  $('jobStatus').textContent='Recording started. The server is preparing video segments.';
  $('clip').disabled=false;$('stop').disabled=false;

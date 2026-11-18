@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HypeClip • Live Hype Detector</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#080f19;color:#e7effb}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(900px 450px at 25% -10%,#12435870,transparent),#080f19}header{border-bottom:1px solid #263b4e;background:#0c1623c4;padding:19px max(20px,calc((100vw - 1100px)/2));display:flex;align-items:center;justify-content:space-between}
+.logo{font-size:26px;font-weight:850;letter-spacing:-1px}.logo span{color:#2be2c5}.sub{font-size:12px;color:#89a1b8}
+main{max-width:1100px;margin:auto;padding:26px 20px 70px}.banner{padding:13px 17px;border-radius:12px;background:#1e2940;border:1px solid #34506d;color:#c8deed;margin-bottom:22px;font-size:13px}
+.row{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}.card{background:#101c2c;border:1px solid #273e56;border-radius:18px;padding:22px;margin-bottom:18px;min-width:0;box-shadow:0 15px 35px #0002}
+h1{font-size:33px;margin:0 0 7px}h2{font-size:18px;margin:0 0 15px}p{margin:0 0 18px;color:#97afc6;line-height:1.5}label{display:block;font-size:13px;color:#a4bed4;margin:15px 0 7px}
+input,select{width:100%;padding:13px 12px;color:#e5f5ff;background:#0a1320;border:1px solid #37516c;border-radius:10px;font-size:14px}input:focus,select:focus{outline:2px solid #2be2c58e}
+.buttons{display:flex;gap:10px;margin-top:19px;flex-wrap:wrap}button{background:#27dbc1;color:#06201d;border:0;border-radius:10px;font-weight:750;padding:12px 17px;cursor:pointer}button.secondary{background:#26394d;color:#d6e5f3}button:disabled{opacity:.55;cursor:wait}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.stat{border:1px solid #2a4258;background:#142437;border-radius:14px;padding:16px}.number{font-size:27px;font-weight:800;margin:9px 0 2px}.muted{color:#8ca8be;font-size:12px}
+.tag{background:#2c4156;color:#b7d1e5;border-radius:40px;padding:7px 11px;font-size:12px}.tag.live{background:#164d42;color:#63f6cf}.titlebar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+.chart{display:flex;align-items:end;gap:3px;height:150px;background:linear-gradient(#ffffff08 1px,transparent 1px) 0 0/100% 25%;border-bottom:1px solid #33495c;overflow:hidden}
+.bar{flex:1;min-width:3px;background:linear-gradient(#41efcd,#167794);border-radius:4px 4px 0 0;min-height:2px}
+.feed{height:276px;overflow:auto}.feeditem{border-bottom:1px solid #283d50;padding:9px 0;font-size:13px}.feeditem b{color:#55e8d3;margin-right:8px}.time{color:#6f8b9e;font-size:11px;float:right}
+.event{border-left:3px solid #30eac9;background:#14273b;margin:9px 0;padding:12px;border-radius:8px}.event strong{color:#63f3d4}
+small{color:#87a7bd}.empty{color:#7790a6;font-size:13px}.error{color:#ff9b9b;margin-top:10px;font-size:13px;white-space:pre-wrap}
+@media(max-width:820px){.row{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}header{padding:17px 20px}h1{font-size:27px}}
+</style></head><body>
+<header><div><div class="logo">Hype<span>Clip</span> <span style="font-size:11px;color:#8ca8be">BETA</span></div><div class="sub">Automated live-chat hype detector</div></div><span class="tag" id="status">Idle</span></header>
+<main>
+<div class="banner"><b>Testing build:</b> This deployment detects chat spikes and saves event timestamps. MP4 video recording is not yet enabled. YouTube chat requires a server-side API key; Demo mode works without one. Only YouTube is supported so far.</div>
+<div class="row"><section class="card"><h1>Watch the hype happen.</h1><p>Paste a YouTube livestream link, monitor live-chat frequency, and spot viral moments as they happen.</p>
+<label for="url">Livestream URL</label><input id="url" value="https://www.youtube.com/watch?v=3QjXNSf6keg" placeholder="https://youtube.com/watch?v=...">
+<label for="mode">Monitoring mode</label><select id="mode"><option value="demo">Demo / simulated live chat</option><option value="youtube">Actual YouTube live chat</option></select>
+<label for="sensitivity">Detection sensitivity</label><select id="sensitivity"><option value="high">High • more spikes</option><option value="balanced" selected>Balanced</option><option value="low">Low • major spikes only</option></select>
+<div class="buttons"><button id="start">▶ Start monitoring</button><button id="stop" class="secondary">■ Stop</button></div><div id="error" class="error"></div></section>
+<section class="card"><div class="titlebar"><h2>Session</h2><span class="tag" id="modebadge">DEMO READY</span></div><p id="sessiontitle">No monitoring session yet</p><div class="stats"><div class="stat"><div class="muted">Total messages</div><div class="number" id="total">0</div></div><div class="stat"><div class="muted">Chat / 10 sec</div><div class="number" id="rate">0</div></div><div class="stat"><div class="muted">Peak activity</div><div class="number" id="peak">0</div></div><div class="stat"><div class="muted">Hype moments</div><div class="number" id="hypes">0</div></div></div><p style="margin-top:18px;font-size:12px">Baseline chat activity: <b id="baseline">0</b> / 10 sec</p></section></div>
+<section class="card"><div class="titlebar"><h2>Chat velocity • last ~3 min</h2><span class="sub">Messages per 10 seconds</span></div><div class="chart" id="chart"><span class="empty">Start monitoring to see the chart.</span></div></section>
+<div class="row"><section class="card"><div class="titlebar"><h2>Live chat</h2><span class="sub">Latest messages</span></div><div id="feed" class="feed"><div class="empty">No messages yet.</div></div></section><section class="card"><div class="titlebar"><h2>Detected hype moments</h2><span class="sub">Time and hype score</span></div><div id="events" class="feed"><div class="empty">Hype spikes will appear here.</div></div></section></div>
+<footer class="sub">HypeClip v1 testing dashboard • All monitoring runs on the server while a session is active. The demo uses generated data, not actual YouTube chat.</footer></main>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=at=>new Date(at).toLocaleTimeString();
+const esc=s=>String(s||'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+function render(s){
+$('status').textContent=s.status==='monitoring'?'● MONITORING':'Idle';$('status').className='tag '+(s.status==='monitoring'?'live':'');
+$('sessiontitle').textContent=s.title||'No monitoring session yet';
+$('modebadge').textContent=s.mode==='demo'?'SIMULATED CHAT':'YOUTUBE LIVE';
+$('total').textContent=s.count||0;$('rate').textContent=s.rate||0;$('peak').textContent=s.peak||0;
+$('hypes').textContent=(s.events||[]).length;$('baseline').textContent=s.baseline||0;
+if(s.error)$('error').textContent=s.error;
+const hist=(s.history||[]).slice(-80);
+$('chart').innerHTML=hist.length?hist.map(x=>'<div class="bar" title="'+x.messages+' messages / 10s" style="height:'+Math.max(2,Math.round(x.messages/Math.max(20,...hist.map(v=>v.messages))*100))+'%"></div>').join(''):'<span class="empty">Waiting for chat activity...</span>';
+$('feed').innerHTML=(s.messages||[]).length?s.messages.map(m=>'<div class="feeditem"><span class="time">'+fmt(m.at)+'</span><b>'+esc(m.author)+'</b>'+esc(m.text)+'</div>').join(''):'<span class="empty">No messages yet.</span>';
+$('events').innerHTML=(s.events||[]).length?s.events.map(e=>'<div class="event"><strong>🔥 HYPE '+e.score+'/100</strong><span class="time">'+fmt(e.at)+'</span><div style="margin:7px 0">'+e.count+' messages / 10 sec • '+e.unique+' chatters</div><small>'+esc(e.clip)+'</small></div>').join(''):'<span class="empty">No hype moments detected yet.</span>';
+}
+async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data||{})});const obj=await r.json();if(!r.ok)throw Error(obj.error||'Request failed');return obj}
+$('start').onclick=async()=>{const b=$('start');b.disabled=true;$('error').textContent='';try{await api('/api/start',{url:$('url').value,demo:$('mode').value==='demo',sensitivity:$('sensitivity').value})}catch(e){$('error').textContent=e.message}finally{b.disabled=false}};
+$('stop').onclick=async()=>{try{await api('/api/stop')}catch(e){$('error').textContent=e.message}};
+const stream=new EventSource('/api/events');stream.onmessage=e=>{try{render(JSON.parse(e.data))}catch{}};
+stream.onerror=()=>{$('error').textContent='Live dashboard disconnected. Retrying...'};
+fetch('/api/state').then(r=>r.json()).then(render).catch(()=>{});
+</script></body></html>

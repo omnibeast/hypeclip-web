@@ -162,10 +162,10 @@ async function poll(){if(!jobId||!token)return false;try{
  $('jobState').textContent=j.status;$('segments').textContent=j.segments;$('elapsed').textContent=j.elapsedSeconds+'s';
  $('jobBadge').textContent=j.recordingHealth==='buffering'?'● Video buffering':j.recordingHealth==='waiting-for-video'?'● Waiting for video':j.status==='recording'?'● Starting':'● '+j.status;
  plotHype(j.hypeHistory,j.chat);
- $('jobStatus').textContent=j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
- $('clip').disabled=j.status!=='recording'||j.segments<2;$('stop').disabled=j.status!=='recording';
+ $('jobStatus').textContent=j.status==='chat-only'?'Video capture blocked: '+(j.error||'source unavailable')+' Chat monitoring remains active where supported; MP4 clipping needs video footage.':j.error?'Recorder: '+j.error:j.recordingHealth==='waiting-for-video'?'Waiting for the source to produce playable video segments; clipping is disabled until footage arrives.':(j.chat?.status==='monitoring'?'YouTube live chat monitoring active • '+(j.chat.recentRate||0)+' messages/10 sec. Chat spikes trigger clips automatically.':j.chat?.error?'Chat monitor: '+j.chat.error:'Clips include clean source video and UTC timestamp logs.');
+ $('clip').disabled=j.status!=='recording'||j.segments<2;$('stop').disabled=!['recording','chat-only','starting'].includes(j.status);
  renderClips(j.clips);
- if(j.status!=='recording'&&j.status!=='starting'&&statusTimer){clearInterval(statusTimer);statusTimer=null}
+ if(!['recording','starting','chat-only'].includes(j.status)&&statusTimer){clearInterval(statusTimer);statusTimer=null}
  return true;
  }catch(e){
    if(isSessionError(e)){

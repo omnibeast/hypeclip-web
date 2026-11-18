@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import ffmpeg from 'ffmpeg-static';
+import youtubedl from 'youtube-dl-exec';
 import {bestHlsUrl} from './server-hls.js';
 
 const jobs=new Map(), ACTIVE_LIMIT=1, MAX_DURATION=10*60*1000, MAX_SEGMENTS=150, MAX_CLIPS=5;
@@ -15,10 +16,13 @@ function provider(url){
  let u;try{u=new URL(url)}catch{return {provider:'unknown',status:'invalid',reason:'Enter a full HTTPS livestream URL.'}}
  if(u.protocol!=='https:'||u.username||u.password)return {provider:'unknown',status:'invalid',reason:'Use a standard HTTPS URL without credentials.'};
  const host=u.hostname.toLowerCase();
- if(host==='youtube.com'||host==='www.youtube.com'||host==='m.youtube.com'||host==='youtu.be')return {provider:'YouTube',status:'metadata-only',reason:'HypeClip can detect YouTube livestream chat, but the YouTube Data API does not provide permission or a raw video feed for universal MP4 recording.'};
- if(host==='twitch.tv'||host==='www.twitch.tv')return {provider:'Twitch',status:'integration-required',reason:'Twitch clip/video integration needs provider-approved access and a supported authorization flow; no raw recording is configured.'};
- if(host==='kick.com'||host==='www.kick.com')return {provider:'Kick',status:'integration-required',reason:'A provider-compatible authorized recording integration is not configured.'};
- if(host==='facebook.com'||host==='www.facebook.com'||host==='fb.watch')return {provider:'Facebook Live',status:'integration-required',reason:'This provider needs a compliant recording integration and access permissions.'};
+ if(host==='youtube.com'||host==='www.youtube.com'||host==='m.youtube.com'||host==='youtu.be'){
+ const approved=process.env.HYPECLIP_YOUTUBE_CAPTURE_APPROVED==='true';
+ return {provider:'YouTube',status:approved?'ready':'platform-approval-required',reason:approved?'Provider-approved YouTube recording enabled for this server. Source must be publicly accessible and you must have the right to record.':'YouTube does not authorize general download/recording from public URLs. This server requires prior YouTube approval before enabling automatic capture.'};
+}
+ if(host==='twitch.tv'||host==='www.twitch.tv')return {provider:'Twitch',status:'ready',reason:'Experimental public-stream extractor available. Only record content you have rights and platform permission to use; access/DRM failures may occur.'};
+ if(host==='kick.com'||host==='www.kick.com')return {provider:'Kick',status:'ready',reason:'Experimental public-stream extractor available. Only record content you have rights and platform permission to use; access/DRM failures may occur.'};
+ if(host==='facebook.com'||host==='www.facebook.com'||host==='fb.watch')return {provider:'Facebook Live',status:'integration-required',reason:'Automatic capture requires an authorized provider integration and may require login.'};
  if(host==='instagram.com'||host==='www.instagram.com')return {provider:'Instagram Live',status:'integration-required',reason:'This provider needs an approved recording integration.'};
  if(host==='tiktok.com'||host==='www.tiktok.com')return {provider:'TikTok LIVE',status:'integration-required',reason:'This provider needs an approved recording integration.'};
  if(u.pathname.toLowerCase().endsWith('.m3u8')){
@@ -36,7 +40,7 @@ async function validateURL(raw){
  const addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||addresses.some(a=>privateIP(a.address)))throw error('Restricted source address.');
  return u.toString();
 }
-function cleanup(job){if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
+function cleanup(job){if(job.extractor){try{job.extractor.kill('SIGTERM')}catch{}job.extractor=null}if(job.child){try{job.child.kill('SIGTERM')}catch{}job.child=null}if(job.timer)clearInterval(job.timer);job.timer=null;job.status='stopped';try{fs.rmSync(job.dir,{recursive:true,force:true})}catch{}}
 function scan(job){
  if(!fs.existsSync(job.dir))return [];
  const names=fs.readdirSync(job.dir).filter(n=>/^part-\d{6}\.ts$/.test(n)).sort().slice(-MAX_SEGMENTS);
@@ -50,13 +54,36 @@ export async function start({url,confirmedRights},req){
  if(typeof url!=='string'||url.length>2048)throw error('Invalid video URL.');
  const active=[...jobs.values()].filter(j=>j.status==='recording');
  if(active.length>=ACTIVE_LIMIT)throw error('The test server is currently recording another stream. Try again after that job finishes.',429);
- const validated=await validateURL(url);const playlist=await bestHlsUrl(validated);const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
- const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:'Direct HLS',error:'',clips:[],child:null,timer:null};jobs.set(id,job);
- const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',playlist.toString(),'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
- const child=spawn(ffmpeg,args,{stdio:['ignore','ignore','pipe']});job.child=child;job.status='recording';
- child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(0,250)});
- child.on('error',e=>{job.error='Recorder launch failed: '+e.message;job.status='failed';job.child=null});
+ const parsed=provider(url);if(parsed.status!=='ready')throw error(parsed.reason,422);
+ const isDirectHls=parsed.provider==='Direct HLS';
+ const validated=isDirectHls?await validateURL(url):new URL(url).toString();
+ const playlist=isDirectHls?await bestHlsUrl(validated):validated;
+ const id=guid(),token=crypto.randomBytes(32).toString('hex'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'hypeclip-v2-')),createdAt=Date.now();
+ const job={id,token,dir,createdAt,expiresAt:createdAt+MAX_DURATION,status:'starting',provider:parsed.provider,error:'',clips:[],child:null,extractor:null,timer:null};jobs.set(id,job);
+ let extractor=null;
+ const sourceInput=isDirectHls?playlist.toString():'pipe:0';
+ const args=['-hide_banner','-loglevel','error','-nostdin','-rw_timeout','15000000','-i',sourceInput,'-map','0:v:0','-map','0:a:0?','-c','copy','-f','segment','-segment_time','3','-segment_format','mpegts','-reset_timestamps','1',path.join(dir,'part-%06d.ts')];
+ const child=spawn(ffmpeg,args,{stdio:[isDirectHls?'ignore':'pipe','ignore','pipe']});job.child=child;job.status='recording';
+ child.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
+ child.on('error',e=>{job.error='FFmpeg recorder launch failed: '+e.message;job.status='failed';job.child=null});
  child.on('close',c=>{if(job.child===child){job.child=null;job.status='failed';job.error=job.error||'Recorder closed unexpectedly ('+c+').' }});
+ if(!isDirectHls){
+   // Only the canonical platform URL (never an arbitrary host) reaches the extractor.
+   // No cookies, login state, special headers, DRM circumvention or bypass options.
+   try{
+     extractor=youtubedl.exec(validated,{
+       output:'-',format:'best[height<=1080]/best',noPlaylist:true,
+       noWarnings:true,noProgress:true,hlsUseMpegts:true
+     },{timeout:MAX_DURATION+30000,killSignal:'SIGTERM'});
+     job.extractor=extractor;
+     extractor.stdout.pipe(child.stdin);
+     extractor.stderr.on('data',b=>{job.error=String(b).replace(/https?:\/\/[^\s]+/g,'[source]').slice(-350)});
+     extractor.on('error',e=>{job.error='Stream extractor failed: '+e.message;job.status='failed';try{child.kill('SIGTERM')}catch{}});
+     extractor.on('close',c=>{
+       if(job.extractor===extractor){job.extractor=null;if(job.status==='recording'){job.status='failed';job.error=job.error||'Extractor stopped ('+c+'). The stream may be unavailable, blocked or offline.'}}
+     });
+   }catch(e){job.status='failed';job.error='Could not launch public stream extractor: '+e.message;try{child.kill('SIGTERM')}catch{}}
+ }
  job.timer=setInterval(()=>{if(Date.now()>job.expiresAt)cleanup(job)},5000);
  return {job:view(job),token};
 }
@@ -82,7 +109,7 @@ export async function createClip(id,token,settings={}){
  if(parts.length<2)throw Error('Not enough buffered footage. Allow the recording to run longer.');
  const output=path.join(job.dir,clip.id+'.mp4');await encode(parts.map(x=>x.file),output,quality);
  const start=parts[0].at,end=parts[parts.length-1].at;
- clip.metadata={triggerUTC:new Date(event).toISOString(),clipStartUTC:new Date(start).toISOString(),clipEndUTC:new Date(end).toISOString(),elapsedFromRecordingStartSeconds:Math.round((event-job.createdAt)/1000),requestedSecondsBefore:before,requestedSecondsAfter:after,quality:quality+'p',source:'authorized-direct-HLS',cleanSourceVideo:true};
+ clip.metadata={triggerUTC:new Date(event).toISOString(),clipStartUTC:new Date(start).toISOString(),clipEndUTC:new Date(end).toISOString(),elapsedFromRecordingStartSeconds:Math.round((event-job.createdAt)/1000),requestedSecondsBefore:before,requestedSecondsAfter:after,quality:quality+'p',source:job.provider,cleanSourceVideo:true};
  fs.writeFileSync(path.join(job.dir,clip.id+'.json'),JSON.stringify(clip.metadata,null,2));
  fs.writeFileSync(path.join(job.dir,clip.id+'.csv'),'key,value\n'+Object.entries(clip.metadata).map(([k,v])=>k+',"'+String(v).replace(/"/g,'""')+'"').join('\n')+'\n');
  clip.state='ready';clip.bytes=fs.statSync(output).size;

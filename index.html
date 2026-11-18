@@ -20,15 +20,15 @@ small{color:#87a7bd}.empty{color:#7790a6;font-size:13px}.error{color:#ff9b9b;mar
 </style></head><body>
 <header><div><div class="logo">Hype<span>Clip</span> <span style="font-size:11px;color:#8ca8be">BETA</span></div><div class="sub">Automated live-chat hype detector</div></div><span class="tag" id="status">Idle</span></header>
 <main>
-<div class="banner"><b>Testing build:</b> This deployment detects chat spikes and saves event timestamps. MP4 video recording is not yet enabled. YouTube chat requires a server-side API key; Demo mode works without one. Only YouTube is supported so far.</div>
+<div class="banner"><b>Testing build:</b> This deployment detects chat spikes and saves event timestamps. MP4 recording is now experimental: use <b>Capture livestream tab</b>, select the browser tab playing the stream, and keep it open. Recordings are buffered temporarily on the server, and chat hype events may generate MP4 highlights. Recording does not happen automatically on the server; browser tab sharing is required. Only YouTube live chat is supported.</div>
 <div class="row"><section class="card"><h1>Watch the hype happen.</h1><p>Paste a YouTube livestream link, monitor live-chat frequency, and spot viral moments as they happen.</p>
 <label for="url">Livestream URL</label><input id="url" value="https://www.youtube.com/watch?v=3QjXNSf6keg" placeholder="https://youtube.com/watch?v=...">
 <label for="mode">Monitoring mode</label><select id="mode"><option value="demo">Demo / simulated live chat</option><option value="youtube">Actual YouTube live chat</option></select>
 <label for="sensitivity">Detection sensitivity</label><select id="sensitivity"><option value="high">High • more spikes</option><option value="balanced" selected>Balanced</option><option value="low">Low • major spikes only</option></select>
-<div class="buttons"><button id="start">▶ Start monitoring</button><button id="stop" class="secondary">■ Stop</button></div><div id="error" class="error"></div></section>
+<div class="buttons"><button id="start">▶ Start monitoring</button><button id="stop" class="secondary">■ Stop</button></div><div class="buttons"><button id="capture" class="secondary">⏺ Capture livestream tab</button><button id="capturestop" class="secondary">Stop capture</button><button id="manualclip" class="secondary">✂ Create test MP4</button></div><div id="capturestatus" class="sub" style="margin-top:10px">Capture inactive. In Chrome/Edge, share the livestream tab with tab audio; keep this page open.</div><p class="sub" style="margin-top:10px">Open the livestream in another browser tab first, then select that tab in the screen-share picker. MP4s are temporary; download them before the server restarts. Clips are generated from the selected tab, not from a server-side YouTube downloader.</p><div id="error" class="error"></div></section>
 <section class="card"><div class="titlebar"><h2>Session</h2><span class="tag" id="modebadge">DEMO READY</span></div><p id="sessiontitle">No monitoring session yet</p><div class="stats"><div class="stat"><div class="muted">Total messages</div><div class="number" id="total">0</div></div><div class="stat"><div class="muted">Chat / 10 sec</div><div class="number" id="rate">0</div></div><div class="stat"><div class="muted">Peak activity</div><div class="number" id="peak">0</div></div><div class="stat"><div class="muted">Hype moments</div><div class="number" id="hypes">0</div></div></div><p style="margin-top:18px;font-size:12px">Baseline chat activity: <b id="baseline">0</b> / 10 sec</p></section></div>
 <section class="card"><div class="titlebar"><h2>Chat velocity • last ~3 min</h2><span class="sub">Messages per 10 seconds</span></div><div class="chart" id="chart"><span class="empty">Start monitoring to see the chart.</span></div></section>
-<div class="row"><section class="card"><div class="titlebar"><h2>Live chat</h2><span class="sub">Latest messages</span></div><div id="feed" class="feed"><div class="empty">No messages yet.</div></div></section><section class="card"><div class="titlebar"><h2>Detected hype moments</h2><span class="sub">Time and hype score</span></div><div id="events" class="feed"><div class="empty">Hype spikes will appear here.</div></div></section></div>
+<div class="row"><section class="card"><div class="titlebar"><h2>Live chat</h2><span class="sub">Latest messages</span></div><div id="feed" class="feed"><div class="empty">No messages yet.</div></div></section><section class="card"><div class="titlebar"><h2>Detected hype moments & MP4 clips</h2><span class="sub">Time and hype score</span></div><div id="events" class="feed"><div class="empty">Hype spikes will appear here.</div></div></section></div>
 <footer class="sub">HypeClip v1 testing dashboard • All monitoring runs on the server while a session is active. The demo uses generated data, not actual YouTube chat.</footer></main>
 <script>
 const $=id=>document.getElementById(id);
@@ -39,7 +39,7 @@ $('status').textContent=s.status==='monitoring'?'● MONITORING':'Idle';$('statu
 $('sessiontitle').textContent=s.title||'No monitoring session yet';
 $('modebadge').textContent=s.mode==='demo'?'SIMULATED CHAT':'YOUTUBE LIVE';
 $('total').textContent=s.count||0;$('rate').textContent=s.rate||0;$('peak').textContent=s.peak||0;
-$('hypes').textContent=(s.events||[]).length;$('baseline').textContent=s.baseline||0;
+$('hypes').textContent=(s.events||[]).length;if(!isCapturing)$('capturestatus').textContent=s.recording?'Server is receiving video segments':'Capture inactive; click Capture livestream tab';$('baseline').textContent=s.baseline||0;
 if(s.error)$('error').textContent=s.error;
 const hist=(s.history||[]).slice(-80);
 $('chart').innerHTML=hist.length?hist.map(x=>'<div class="bar" title="'+x.messages+' messages / 10s" style="height:'+Math.max(2,Math.round(x.messages/Math.max(20,...hist.map(v=>v.messages))*100))+'%"></div>').join(''):'<span class="empty">Waiting for chat activity...</span>';
@@ -49,6 +49,59 @@ $('events').innerHTML=(s.events||[]).length?s.events.map(e=>'<div class="event">
 async function api(path,data){const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data||{})});const obj=await r.json();if(!r.ok)throw Error(obj.error||'Request failed');return obj}
 $('start').onclick=async()=>{const b=$('start');b.disabled=true;$('error').textContent='';try{await api('/api/start',{url:$('url').value,demo:$('mode').value==='demo',sensitivity:$('sensitivity').value})}catch(e){$('error').textContent=e.message}finally{b.disabled=false}};
 $('stop').onclick=async()=>{try{await api('/api/stop')}catch(e){$('error').textContent=e.message}};
+
+let isCapturing=false,sourceStream=null,segmentRecorder=null,captureTimer=null;
+const captureMessage=s=>$('capturestatus').textContent=s;
+async function uploadSegment(blob){
+ if(blob.size<150)return;
+ try{
+ const response=await fetch('/api/segment',{method:'POST',headers:{'content-type':'video/webm'},body:blob});
+ const result=await response.json();
+ if(!response.ok)throw Error(result.error||'Segment upload failed');
+ if(isCapturing)captureMessage('● Recording • '+result.segments+' buffered segments. Leave both tabs open.');
+ }catch(e){captureMessage('Recording error: '+e.message)}
+}
+function scheduleSegment(){
+ if(!isCapturing||!sourceStream||!sourceStream.active)return;
+ let chunks=[];
+ const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')?'video/webm;codecs=vp8,opus':'video/webm';
+ let recorder;
+ try{recorder=new MediaRecorder(sourceStream,{mimeType:mime,videoBitsPerSecond:750000,audioBitsPerSecond:64000})}
+ catch(e){captureMessage('Cannot start browser recording: '+e.message);stopCapture();return}
+ segmentRecorder=recorder;
+ recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+ recorder.onstop=()=>{
+ const blob=new Blob(chunks,{type:'video/webm'});
+ if(isCapturing){uploadSegment(blob);captureTimer=setTimeout(scheduleSegment,0)}
+ };
+ recorder.onerror=e=>captureMessage('Recorder error: '+(e.error?.message||'Unknown error'));
+ recorder.start();
+ captureTimer=setTimeout(()=>{if(recorder.state==='recording')recorder.stop()},3500);
+}
+async function stopCapture(){
+ isCapturing=false;
+ if(captureTimer)clearTimeout(captureTimer);
+ if(segmentRecorder&&segmentRecorder.state==='recording')segmentRecorder.stop();
+ if(sourceStream){sourceStream.getTracks().forEach(t=>t.stop());sourceStream=null}
+ try{await fetch('/api/recording-stop',{method:'POST'})}catch{}
+ captureMessage('Capture stopped');
+}
+$('capture').onclick=async()=>{
+ if(isCapturing)return;
+ if(!navigator.mediaDevices?.getDisplayMedia||!window.MediaRecorder){captureMessage('Use desktop Chrome or Edge with screen sharing enabled.');return}
+ try{
+ sourceStream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:15},audio:true,preferCurrentTab:false});
+ if(!sourceStream.getVideoTracks().length)throw Error('No video track shared');
+ if(!sourceStream.getAudioTracks().length)captureMessage('Tab capture started (no audio shared)');
+ isCapturing=true;
+ sourceStream.getVideoTracks()[0].addEventListener('ended',()=>stopCapture(),{once:true});
+ scheduleSegment();
+ if(sourceStream.getAudioTracks().length)captureMessage('Recording started with audio. Waiting for video segments...');
+ }catch(e){captureMessage('Capture was not started: '+e.message)}
+};
+$('capturestop').onclick=()=>stopCapture();
+$('manualclip').onclick=async()=>{try{await api('/api/clip');captureMessage('Test clip queued; look in Hype moments in approximately 15 seconds.')}catch(e){captureMessage(e.message)}};
+
 const stream=new EventSource('/api/events');stream.onmessage=e=>{try{render(JSON.parse(e.data))}catch{}};
 stream.onerror=()=>{$('error').textContent='Live dashboard disconnected. Retrying...'};
 fetch('/api/state').then(r=>r.json()).then(render).catch(()=>{});
